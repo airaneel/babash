@@ -4,7 +4,10 @@ Empowering chat applications to code, build and run on your local machine.
 
 wcgw is an MCP server with tightly integrated shell and code editing tools.
 
-⚠️ Warning: do not allow BashCommand tool without reviewing the command, it may result in data loss.
+As of 2026 the reason you could use `wcgw` is that it provides fully interactive shell experience that you and the agent both can control (including sending key-strokes). 
+Combined with the wcgw vscode extension that attaches agent's shell in your editor, you can get the best agentic shell experience that is out there.
+The file editing tricks and the general minimalism also helps agent be more productive.
+
 
 [![Tests](https://github.com/rusiaaman/wcgw/actions/workflows/python-tests.yml/badge.svg?branch=main)](https://github.com/rusiaaman/wcgw/actions/workflows/python-tests.yml)
 [![Mypy strict](https://github.com/rusiaaman/wcgw/actions/workflows/python-types.yml/badge.svg?branch=main)](https://github.com/rusiaaman/wcgw/actions/workflows/python-types.yml)
@@ -58,21 +61,6 @@ wcgw is an MCP server with tightly integrated shell and code editing tools.
   - More details in [Modes section](#modes)
 - ⚡ **Runs in multiplex terminal** Use [vscode extension](https://marketplace.visualstudio.com/items?itemName=AmanRusia.wcgw) or run `screen -x` to attach to the terminal that the AI runs commands on. See history or interrupt process or interact with the same terminal that AI uses.
 - ⚡ **Automatically load CLAUDE.md/AGENTS.md** Loads "CLAUDE.md" or "AGENTS.md" file in project root and sends as instructions during initialisation. Instructions in a global "~/.wcgw/CLAUDE.md" or "~/.wcgw/AGENTS.md" file are loaded and added along with project specific CLAUDE.md. The file name is case sensitive. CLAUDE.md is attached if it's present otherwise AGENTS.md is attached.
-
-## Top use cases examples
-
-- Solve problem X using python, create and run test cases and fix any issues. Do it in a temporary directory
-- Find instances of code with X behavior in my repository
-- Git clone https://github.com/my/repo in my home directory, then understand the project, set up the environment and build
-- Create a golang htmx tailwind webapp, then open browser to see if it works (use with puppeteer mcp)
-- Edit or update a large file
-- In a separate branch create feature Y, then use github cli to create a PR to original branch
-- Command X is failing in Y directory, please run and fix issues
-- Using X virtual environment run Y command
-- Using cli tools, create build and test an android app. Finally run it using emulator for me to use
-- Fix all mypy issues in my repo at X path.
-- Using 'screen' run my server in background instead, then run another api server in bg, finally run the frontend build. Keep checking logs for any issues in all three
-- Create repo wide unittest cases. Keep iterating through files and creating cases. Also keep running the tests after each update. Do not modify original code.
 
 ## Claude setup (using mcp)
 
@@ -253,28 +241,6 @@ Then you can update `/Users/username/Library/Application Support/Claude/claude_d
   }
 }
 ```
-
-## [Optional] Local shell access with openai API key or anthropic API key
-
-### Openai
-
-Add `OPENAI_API_KEY` and `OPENAI_ORG_ID` env variables.
-
-Then run
-
-`uvx wcgw wcgw_local --limit 0.1` # Cost limit $0.1
-
-You can now directly write messages or press enter key to open vim for multiline message and text pasting.
-
-### Anthropic
-
-Add `ANTHROPIC_API_KEY` env variable.
-
-Then run
-
-`uvx wcgw wcgw_local --claude`
-
-You can now directly write messages or press enter key to open vim for multiline message and text pasting.
 
 ## Tools
 
