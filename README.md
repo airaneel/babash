@@ -5,7 +5,7 @@ Empowering chat applications to code, build and run on your local machine.
 wcgw is an MCP server with tightly integrated shell and code editing tools.
 
 As of 2026 the reason you could use `wcgw` is that it provides fully interactive shell experience that you and the agent both can control (including sending key-strokes). 
-Combined with the wcgw vscode extension that attaches agent's shell in your editor, you can get the best agentic shell experience that is out there.
+Combined with the wcgw vscode extension that attaches the agent's shell in your editor, you can get the best agentic shell experience that is out there.
 The file editing tricks and the general minimalism also helps agent be more productive.
 
 
