@@ -7,7 +7,7 @@ Shell and coding agent MCP server. Fork of [wcgw](https://github.com/rusiaaman/w
 - **Interactive shell** — fully interactive terminal via pexpect/pyte, supporting arrow keys, Ctrl-C, background processes
 - **Smart file editing** — search/replace with fuzzy matching, indentation tolerance, syntax checking on writes
 - **File protections** — read-before-edit enforcement, hash-based change detection, token-aware truncation with temp file save
-- **Three modes** — `wcgw` (full access), `architect` (read-only), `code_writer` (restricted paths/commands)
+- **Three modes** — full access (default), `architect` (read-only), `code_writer` (restricted paths/commands)
 - **Task persistence** — save/resume context across chat sessions via ContextSave
 - **ML file ranking** — pre-trained model scores file importance for smart repo overviews
 - **Streamable HTTP** — supports both stdio and streamable-http transports
@@ -70,7 +70,7 @@ docker run -i --rm --mount type=bind,src=/your/workspace,dst=/workspace babash
 
 | Mode | Shell | File Edit | File Write |
 |---|---|---|---|
-| `wcgw` (default) | Full access | All files | All files |
+| default | Full access | All files | All files |
 | `architect` | Read-only | None | None |
 | `code_writer` | Configurable | Specified globs | Specified globs |
 
