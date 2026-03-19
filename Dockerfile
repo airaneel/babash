@@ -28,6 +28,10 @@ COPY --from=build --chown=app:app /app/.venv /app/.venv
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+RUN mkdir -p /home/app/.cache && chown -R app:app /home/app
+
 USER app
+
+ENV HF_HOME=/home/app/.cache/huggingface
 
 ENTRYPOINT ["babash_mcp"]
