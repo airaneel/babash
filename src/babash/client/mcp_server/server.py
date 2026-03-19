@@ -189,23 +189,19 @@ async def handle_call_tool(
 
     content: list[types.TextContent | types.ImageContent | types.EmbeddedResource] = []
     for output_or_done in output_or_dones:
-        if isinstance(output_or_done, str):
-            if issubclass(tool_type, Initialize):
-                init_message = "\nInitialize call done.\n"
-                if app.custom_instructions:
-                    output_or_done += f"\n{app.custom_instructions}\n{init_message}"
-                else:
-                    output_or_done += init_message
+        if not isinstance(output_or_done, str):
+            content.append(types.ImageContent(
+                type="image",
+                data=output_or_done.data,
+                mimeType=output_or_done.media_type,
+            ))
+            continue
 
-            content.append(types.TextContent(type="text", text=output_or_done))
-        else:
-            content.append(
-                types.ImageContent(
-                    type="image",
-                    data=output_or_done.data,
-                    mimeType=output_or_done.media_type,
-                )
-            )
+        if issubclass(tool_type, Initialize):
+            instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
+            output_or_done += f"{instructions}\nInitialize call done.\n"
+
+        content.append(types.TextContent(type="text", text=output_or_done))
 
     return content
 

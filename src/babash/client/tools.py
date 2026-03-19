@@ -158,33 +158,25 @@ def initialize(
             tmp_dir, "claude-playground-" + uuid.uuid4().hex[:4]
         )
 
-    if any_workspace_path:
-        if os.path.exists(any_workspace_path):
-            if os.path.isfile(any_workspace_path):
-                # Set any_workspace_path to the directory containing the file
-                # Add the file to read_files_ only if empty to avoid duplicates
-                if not read_files_:
-                    read_files_ = [any_workspace_path]
-                any_workspace_path = os.path.dirname(any_workspace_path)
-            # Let get_repo_context handle loading the workspace stats
-            repo_context, folder_to_start = get_repo_context(any_workspace_path)
+    if any_workspace_path and os.path.exists(any_workspace_path):
+        if os.path.isfile(any_workspace_path):
+            if not read_files_:
+                read_files_ = [any_workspace_path]
+            any_workspace_path = os.path.dirname(any_workspace_path)
 
-            repo_context = f"---\n# Workspace structure\n{repo_context}\n---\n"
+        repo_context, folder_to_start = get_repo_context(any_workspace_path)
+        repo_context = f"---\n# Workspace structure\n{repo_context}\n---\n"
 
-            # update modes if they're relative
-            if isinstance(mode, CodeWriterMode):
-                mode.update_relative_globs(any_workspace_path)
-            else:
-                assert isinstance(mode, str)
-        else:
-            if os.path.abspath(any_workspace_path):
-                os.makedirs(any_workspace_path, exist_ok=True)
-                repo_context = f"\nInfo: Workspace path {any_workspace_path} did not exist. I've created it for you.\n"
-                folder_to_start = Path(any_workspace_path)
-            else:
-                repo_context = (
-                    f"\nInfo: Workspace path {any_workspace_path} does not exist."
-                )
+        if isinstance(mode, CodeWriterMode):
+            mode.update_relative_globs(any_workspace_path)
+
+    elif any_workspace_path and os.path.abspath(any_workspace_path):
+        os.makedirs(any_workspace_path, exist_ok=True)
+        repo_context = f"\nInfo: Workspace path {any_workspace_path} did not exist. I've created it for you.\n"
+        folder_to_start = Path(any_workspace_path)
+
+    elif any_workspace_path:
+        repo_context = f"\nInfo: Workspace path {any_workspace_path} does not exist."
     # Restore bash state if available
     if loaded_state is not None:
         try:
@@ -194,33 +186,19 @@ def initialize(
             )
             loaded_thread_id = snapshot.thread_id or context.bash_state.current_thread_id
 
+            # Use snapshot's mode config for default mode, otherwise apply requested mode
             if mode == "babash":
-                context.bash_state.load_state(
-                    snapshot.bash_command_mode,
-                    snapshot.file_edit_mode,
-                    snapshot.write_if_empty_mode,
-                    snapshot.mode,
-                    {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite},
-                    str(folder_to_start) if folder_to_start else workspace_root,
-                    workspace_root,
-                    loaded_thread_id,
-                )
+                bcm, fem, wem, mn = snapshot.bash_command_mode, snapshot.file_edit_mode, snapshot.write_if_empty_mode, snapshot.mode
             else:
-                mode_impl = modes_to_state(mode)
-                context.bash_state.load_state(
-                    mode_impl.bash_command_mode,
-                    mode_impl.file_edit_mode,
-                    mode_impl.write_if_empty_mode,
-                    mode_impl.mode_name,
-                    {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite},
-                    str(folder_to_start) if folder_to_start else workspace_root,
-                    workspace_root,
-                    loaded_thread_id,
-                )
+                mi = modes_to_state(mode)
+                bcm, fem, wem, mn = mi.bash_command_mode, mi.file_edit_mode, mi.write_if_empty_mode, mi.mode_name
+
+            cwd = str(folder_to_start) if folder_to_start else workspace_root
+            whitelist = {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite}
+            context.bash_state.load_state(bcm, fem, wem, mn, whitelist, cwd, workspace_root, loaded_thread_id)
         except ValueError:
             context.console.print(traceback.format_exc())
             context.console.print("Error: couldn't load bash state")
-            pass
         mode_prompt = get_mode_prompt(context)
     else:
         mode_changed = is_mode_change(mode, context.bash_state)

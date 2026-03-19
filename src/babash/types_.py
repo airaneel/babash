@@ -95,20 +95,13 @@ class Initialize(BaseModel):
 
     @property
     def mode(self) -> ModesConfig:
-        if self.mode_name == "babash":
-            return "babash"
-        if self.mode_name == "architect":
-            return "architect"
-        assert self.allowed_globs is not None, (
-            "allowed_globs can't be null when the mode is code_writer"
-        )
-        assert self.allowed_commands is not None, (
-            "allowed_commands can't be null when the mode is code_writer"
-        )
-        config = CodeWriterMode(
+        if self.mode_name != "code_writer":
+            return self.mode_name
+        assert self.allowed_globs is not None
+        assert self.allowed_commands is not None
+        return CodeWriterMode(
             allowed_globs=self.allowed_globs, allowed_commands=self.allowed_commands
         )
-        return config
 
     def update_relative_globs(self, workspace_root: str) -> None:
         """Update globs if they're relative paths"""
@@ -243,79 +236,50 @@ class ReadFiles(BaseModel):
         """Get the end line numbers."""
         return self._end_line_nums
 
+    @staticmethod
+    def _parse_line_range(file_path: str) -> tuple[str, int | None, int | None]:
+        """Parse 'file.py:10-20' into (path, start, end). Returns original path on no match."""
+        if ":" not in file_path:
+            return file_path, None, None
+
+        parts = file_path.rsplit(":", 1)
+        if len(parts) != 2:
+            return file_path, None, None
+
+        path, spec = parts
+
+        # file.py:10
+        if spec.isdigit():
+            return path, int(spec), None
+
+        if "-" not in spec:
+            return file_path, None, None
+
+        left, right = spec.split("-", 1)
+
+        # file.py:-20
+        if not left and right.isdigit():
+            return path, None, int(right)
+
+        # file.py:10- or file.py:10-20
+        if left.isdigit():
+            end = int(right) if right.isdigit() else None
+            return path, int(left), end
+
+        return file_path, None, None
+
     def model_post_init(self, __context: Any) -> None:
-        # Parse file paths for line ranges and store them in private attributes
         self._start_line_nums = []
         self._end_line_nums = []
-
-        # Create new file_paths list without line ranges
         clean_file_paths = []
 
         for file_path in self.file_paths:
-            start_line_num = None
-            end_line_num = None
-            path_part = file_path
+            path, start, end = self._parse_line_range(file_path)
+            clean_file_paths.append(path)
+            self._start_line_nums.append(start)
+            self._end_line_nums.append(end)
 
-            # Check if the path ends with a line range pattern
-            # We're looking for patterns at the very end of the path like:
-            #  - file.py:10      (specific line)
-            #  - file.py:10-20   (line range)
-            #  - file.py:10-     (from line 10 to end)
-            #  - file.py:-20     (from start to line 20)
-
-            # Split by the last colon
-            if ":" in file_path:
-                parts = file_path.rsplit(":", 1)
-                if len(parts) == 2:
-                    potential_path = parts[0]
-                    line_spec = parts[1]
-
-                    # Check if it's a valid line range format
-                    if line_spec.isdigit():
-                        # Format: file.py:10
-                        try:
-                            start_line_num = int(line_spec)
-                            path_part = potential_path
-                        except ValueError:
-                            # Keep the original path if conversion fails
-                            pass
-
-                    elif "-" in line_spec:
-                        # Could be file.py:10-20, file.py:10-, or file.py:-20
-                        line_parts = line_spec.split("-", 1)
-
-                        if not line_parts[0] and line_parts[1].isdigit():
-                            # Format: file.py:-20
-                            try:
-                                end_line_num = int(line_parts[1])
-                                path_part = potential_path
-                            except ValueError:
-                                # Keep original path
-                                pass
-
-                        elif line_parts[0].isdigit():
-                            # Format: file.py:10-20 or file.py:10-
-                            try:
-                                start_line_num = int(line_parts[0])
-
-                                if line_parts[1].isdigit():
-                                    # file.py:10-20
-                                    end_line_num = int(line_parts[1])
-
-                                # In both cases, update the path
-                                path_part = potential_path
-                            except ValueError:
-                                # Keep original path
-                                pass
-
-            # Add clean path and corresponding line numbers
-            clean_file_paths.append(path_part)
-            self._start_line_nums.append(start_line_num)
-            self._end_line_nums.append(end_line_num)
-
-        # Update file_paths with clean paths
         self.file_paths = clean_file_paths
-
         return super().model_post_init(__context)
 
 
