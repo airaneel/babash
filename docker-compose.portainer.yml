@@ -2,7 +2,7 @@ services:
   babash:
     image: airaneel/babash:latest
     ports:
-      - "8000:8000"
+      - "${BABASH_PORT:-8484}:8000"
     environment:
       - BABASH_SERVER_INSTRUCTIONS=${BABASH_SERVER_INSTRUCTIONS:-}
       - BABASH_SHELL=${BABASH_SHELL:-/bin/bash}
