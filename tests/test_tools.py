@@ -76,7 +76,7 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
 
 def test_initialize(context: Context, temp_dir: str) -> None:
     """Test the Initialize tool with various configurations."""
-    # Test default wcgw mode
+    # Test default babash mode
     init_args = Initialize(
         type="first_call",
         any_workspace_path=temp_dir,
@@ -167,7 +167,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
     assert "Following is the retrieved" in outputs[0]  # Verify context was retrieved
 
     # Test mode override when resuming context
-    # First save context in wcgw mode
+    # First save context in babash mode
     new_test_file = os.path.join(temp_dir, "test2.txt")
     with open(new_test_file, "w") as f:
         f.write("test content 2")

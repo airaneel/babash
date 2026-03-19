@@ -113,7 +113,7 @@ You are now running in "code_writer" mode.
     return base
 
 
-WCGW_PROMPT = """
+BABASH_PROMPT = """
 # Instructions
 
     - You should use the provided bash execution, reading and writing file tools to complete objective.
@@ -195,7 +195,7 @@ def modes_to_state(
         )
 
 
-WCGW_KT = """Use `ContextSave` tool to do a knowledge transfer of the task in hand.
+BABASH_KT = """Use `ContextSave` tool to do a knowledge transfer of the task in hand.
 Write detailed description in order to do a KT.
 Save all information necessary for a person to understand the task and the problems.
 
@@ -233,4 +233,4 @@ Provide all relevant file paths in order to understand and solve the the task. E
 (Note to self: this conversation can then be resumed later asking "Resume babash task `<generated id>`" which should call Initialize tool)
 """
 
-KTS = {"babash": WCGW_KT, "architect": ARCHITECT_KT, "code_writer": WCGW_KT}
+KTS = {"babash": BABASH_KT, "architect": ARCHITECT_KT, "code_writer": BABASH_KT}

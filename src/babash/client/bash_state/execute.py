@@ -19,7 +19,7 @@ from ..encoder import EncoderDecoder
 from .parser.bash_statement_parser import BashStatementParser
 from .shell_process import (
     CONFIG,
-    cleanup_orphaned_wcgw_screens,
+    cleanup_orphaned_babash_screens,
     render_terminal_output,
 )
 
@@ -140,7 +140,7 @@ def execute_bash(
         bash_state.run_bg_expect_thread()
         if bash_state.over_screen:
             thread = threading.Thread(
-                target=cleanup_orphaned_wcgw_screens,
+                target=cleanup_orphaned_babash_screens,
                 args=(bash_state.console,),
                 daemon=True,
             )

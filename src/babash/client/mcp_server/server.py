@@ -57,7 +57,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     global _app_state
     CONFIG.update(3, 55, 5)
 
-    custom_instructions = os.getenv("WCGW_SERVER_INSTRUCTIONS")
+    custom_instructions = os.getenv("BABASH_SERVER_INSTRUCTIONS")
     console = Console()
 
     tmp_dir = get_tmpdir()

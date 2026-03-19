@@ -30,8 +30,8 @@ from .shell_process import (
     CONFIG,
     PROMPT_CONST,
     check_if_screen_command_available,
-    cleanup_orphaned_wcgw_screens,
-    ensure_wcgw_block_in_rc_file,
+    cleanup_orphaned_babash_screens,
+    ensure_babash_block_in_rc_file,
     get_rc_file_path,
     get_tmpdir,
     start_shell,
@@ -232,10 +232,10 @@ class BashState:
         self.last_command = ""
         os.makedirs(self._cwd, exist_ok=True)
 
-        ensure_wcgw_block_in_rc_file(self._shell_path, self.console)
+        ensure_babash_block_in_rc_file(self._shell_path, self.console)
 
         if check_if_screen_command_available():
-            cleanup_orphaned_wcgw_screens(self.console)
+            cleanup_orphaned_babash_screens(self.console)
 
         self.__shell: pexpect.spawn[str] | None = None
         self.__shell_id: str | None = None

@@ -84,8 +84,8 @@ termcapinfo xterm* ti@:te@
         return False
 
 
-def get_wcgw_screen_sessions() -> list[str]:
-    """Get a list of all WCGW screen session IDs."""
+def get_babash_screen_sessions() -> list[str]:
+    """Get a list of all babash screen session IDs."""
     screen_sessions = []
 
     try:
@@ -109,7 +109,7 @@ def get_wcgw_screen_sessions() -> list[str]:
 
             session_id = session_parts[0].strip()
 
-            if ".wcgw." in session_id:
+            if ".babash." in session_id:
                 screen_sessions.append(session_id)
     except Exception:
         pass
@@ -117,12 +117,12 @@ def get_wcgw_screen_sessions() -> list[str]:
     return screen_sessions
 
 
-def get_orphaned_wcgw_screens() -> list[str]:
-    """Identify orphaned WCGW screen sessions where the parent process has PID 1 or doesn't exist."""
+def get_orphaned_babash_screens() -> list[str]:
+    """Identify orphaned babash screen sessions where the parent process has PID 1 or doesn't exist."""
     orphaned_screens = []
 
     try:
-        screen_sessions = get_wcgw_screen_sessions()
+        screen_sessions = get_babash_screen_sessions()
 
         for session_id in screen_sessions:
             try:
@@ -144,15 +144,15 @@ def get_orphaned_wcgw_screens() -> list[str]:
     return orphaned_screens
 
 
-def cleanup_orphaned_wcgw_screens(console: Console) -> None:
-    """Clean up all orphaned WCGW screen sessions."""
-    orphaned_sessions = get_orphaned_wcgw_screens()
+def cleanup_orphaned_babash_screens(console: Console) -> None:
+    """Clean up all orphaned babash screen sessions."""
+    orphaned_sessions = get_orphaned_babash_screens()
 
     if not orphaned_sessions:
         return
 
     console.log(
-        f"Found {len(orphaned_sessions)} orphaned WCGW screen sessions to clean up"
+        f"Found {len(orphaned_sessions)} orphaned babash screen sessions to clean up"
     )
 
     for session in orphaned_sessions:
@@ -220,30 +220,30 @@ def get_rc_file_path(shell_path: str) -> Optional[str]:
         return None
 
 
-def ensure_wcgw_block_in_rc_file(shell_path: str, console: Console) -> None:
-    """Ensure the WCGW environment block exists in the appropriate rc file."""
+def ensure_babash_block_in_rc_file(shell_path: str, console: Console) -> None:
+    """Ensure the babash environment block exists in the appropriate rc file."""
     rc_file_path = get_rc_file_path(shell_path)
     if not rc_file_path:
         return
 
     shell_name = os.path.basename(shell_path)
 
-    marker_start = "# --WCGW_ENVIRONMENT_START--"
-    marker_end = "# --WCGW_ENVIRONMENT_END--"
+    marker_start = "# --BABASH_ENVIRONMENT_START--"
+    marker_end = "# --BABASH_ENVIRONMENT_END--"
 
     if shell_name == "zsh":
-        wcgw_block = f"""{marker_start}
-if [ -n "$IN_WCGW_ENVIRONMENT" ]; then
+        babash_block = f"""{marker_start}
+if [ -n "$IN_BABASH_ENVIRONMENT" ]; then
  PROMPT_COMMAND='printf "◉ $(pwd)──➤ \\r\\e[2K"'
- prmptcmdwcgw() {{ eval "$PROMPT_COMMAND" }}
- add-zsh-hook -d precmd prmptcmdwcgw
- precmd_functions+=prmptcmdwcgw
+ prmptcmdbabash() {{ eval "$PROMPT_COMMAND" }}
+ add-zsh-hook -d precmd prmptcmdbabash
+ precmd_functions+=prmptcmdbabash
 fi
 {marker_end}
 """
     elif shell_name == "bash":
-        wcgw_block = f"""{marker_start}
-if [ -n "$IN_WCGW_ENVIRONMENT" ]; then
+        babash_block = f"""{marker_start}
+if [ -n "$IN_BABASH_ENVIRONMENT" ]; then
  PROMPT_COMMAND='printf "◉ $(pwd)──➤ \\r\\e[2K"'
 fi
 {marker_end}
@@ -254,8 +254,8 @@ fi
     if not os.path.exists(rc_file_path):
         try:
             with open(rc_file_path, "w") as f:
-                f.write(wcgw_block)
-            console.log(f"Created {rc_file_path} with WCGW environment block")
+                f.write(babash_block)
+            console.log(f"Created {rc_file_path} with babash environment block")
         except Exception as e:
             console.log(f"Failed to create {rc_file_path}: {e}")
         return
@@ -268,8 +268,8 @@ fi
             return
 
         with open(rc_file_path, "a") as f:
-            f.write("\n" + wcgw_block)
-        console.log(f"Added WCGW environment block to {rc_file_path}")
+            f.write("\n" + babash_block)
+        console.log(f"Added babash environment block to {rc_file_path}")
     except Exception as e:
         console.log(f"Failed to update {rc_file_path}: {e}")
 
@@ -290,7 +290,7 @@ def start_shell(
         "PROMPT_COMMAND": PROMPT_COMMAND,
         "TMPDIR": get_tmpdir(),
         "TERM": "xterm-256color",
-        "IN_WCGW_ENVIRONMENT": "1",
+        "IN_BABASH_ENVIRONMENT": "1",
         "GIT_PAGER": "cat",
         "PAGER": "cat",
     }
@@ -326,7 +326,7 @@ def start_shell(
         os.path.normpath(os.path.abspath(initial_dir)).encode()
     ).hexdigest()[:5]
     shellid = shlex.quote(
-        "wcgw."
+        "babash."
         + time.strftime("%d-%Hh%Mm%Ss")
         + f".{initialdir_hash[:3]}."
         + os.path.basename(initial_dir)

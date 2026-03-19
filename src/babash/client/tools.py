@@ -63,7 +63,7 @@ from .file_ops.search_replace import (
 from .memory import load_memory, save_memory
 from .modes import (
     ARCHITECT_PROMPT,
-    WCGW_PROMPT,
+    BABASH_PROMPT,
     code_writer_prompt,
     modes_to_state,
 )
@@ -94,7 +94,7 @@ def get_mode_prompt(context: Context) -> str:
     elif context.bash_state.mode == "architect":
         mode_prompt = ARCHITECT_PROMPT
     else:
-        mode_prompt = WCGW_PROMPT
+        mode_prompt = BABASH_PROMPT
 
     return mode_prompt
 
