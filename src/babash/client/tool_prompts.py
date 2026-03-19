@@ -20,66 +20,58 @@ TOOL_PROMPTS = [
     Tool(
         inputSchema=remove_titles_from_schema(Initialize.model_json_schema()),
         name="Initialize",
-        description="""
-- Always call this at the start of the conversation before using any of the shell tools from babash.
-- Use `any_workspace_path` to initialize the shell in the appropriate project directory.
-- If the user has mentioned a workspace or project root or any other file or folder use it to set `any_workspace_path`.
-- If user has mentioned any files use `initial_files_to_read` to read, use absolute paths only (~ allowed)
-- By default use mode "babash"
-- In "code-writer" mode, set the commands and globs which user asked to set, otherwise use 'all'.
-- Use type="first_call" if it's the first call to this tool.
-- Use type="user_asked_mode_change" if in a conversation user has asked to change mode.
-- Use type="reset_shell" if in a conversation shell is not working after multiple tries.
-- Use type="user_asked_change_workspace" if in a conversation user asked to change workspace
+        description="""Initialize the shell environment. Must be called first before any other tool.
+- Set `any_workspace_path` to the project directory. Use empty string if unknown.
+- Set `initial_files_to_read` to files the user mentioned, or [] if none.
+- Set `task_id_to_resume` to resume a previous task, or empty string for new tasks.
+- Set `mode_name` to "babash" (full access, default), "architect" (read-only), or "code_writer" (restricted).
+- Set `thread_id` to empty string on first_call. Use the returned thread_id for all subsequent tool calls.
+- Set `type` to "first_call" for initial setup, "user_asked_mode_change" to switch modes, "reset_shell" if shell is broken, "user_asked_change_workspace" to change directory.
 """,
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
     ),
     Tool(
         inputSchema=remove_titles_from_schema(BashCommand.model_json_schema()),
         name="BashCommand",
-        description="""
-- Execute a bash command. This is stateful (beware with subsequent calls).
-- Status of the command and the current working directory will always be returned at the end.
-- The first or the last line might be `(...truncated)` if the output is too long.
-- Always run `pwd` if you get any file or directory not found error to make sure you're not lost.
-- Do not run bg commands using "&", instead use this tool.
-- You must not use echo/cat to read/write files, use ReadFiles/FileWriteOrEdit
-- In order to check status of previous command, use `status_check` with empty command argument.
-- Only command is allowed to run at a time. You need to wait for any previous command to finish before running a new one.
-- Programs don't hang easily, so most likely explanation for no output is usually that the program is still running, and you need to check status again.
-- Do not send Ctrl-c before checking for status till 10 minutes or whatever is appropriate for the program to finish.
-- Only run long running commands in background. Each background command is run in a new non-reusable shell.
-- On running a bg command you'll get a bg command id that you should use to get status or interact.
+        description="""Execute shell commands or interact with running processes.
+- Set `type` to "command" and provide `command` to run a shell command.
+- Set `type` to "status_check" to check if a previous command is still running.
+- Set `type` to "send_text" to send text input to a running interactive program.
+- Set `type` to "send_specials" to send special keys like Enter, Ctrl-c, arrow keys.
+- Set `type` to "send_ascii" to send raw ASCII codes.
+- Set `thread_id` to the value returned by Initialize.
+- Set `is_background` to true to run a command in background (gets its own bg_command_id).
+- Set `bg_command_id` when interacting with a background command.
+- Only one foreground command runs at a time. Check status before running a new one.
+- Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
+- Do not send Ctrl-c without checking status first. Programs may still be running.
 """,
         annotations=ToolAnnotations(destructiveHint=True, openWorldHint=True),
     ),
     Tool(
         inputSchema=remove_titles_from_schema(ReadFiles.model_json_schema()),
         name="ReadFiles",
-        description="""
-- Read full file content of one or more files.
-- Provide absolute paths only (~ allowed)
-- Only if the task requires line numbers understanding:
-    - You may extract a range of lines. E.g., `/path/to/file:1-10` for lines 1-10. You can drop start or end like `/path/to/file:1-` or `/path/to/file:-10` 
+        description="""Read content of one or more files.
+- Provide absolute paths only (~ allowed).
+- Supports line ranges: `/path/file.py:10-20` for lines 10-20, `:10-` from line 10, `:-20` first 20 lines.
 """,
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
     ),
     Tool(
         inputSchema=remove_titles_from_schema(ReadImage.model_json_schema()),
         name="ReadImage",
-        description="Read an image from the shell.",
+        description="Read an image file and return its contents. Provide absolute path.",
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
     ),
     Tool(
         inputSchema=remove_titles_from_schema(FileWriteOrEdit.model_json_schema()),
         name="FileWriteOrEdit",
-        description="""
-- Writes or edits a file based on the percentage of changes.
-- Use absolute path only (~ allowed).
-- First write down percentage of lines that need to be replaced in the file (between 0-100) in percentage_to_change
-- percentage_to_change should be low if mostly new code is to be added. It should be high if a lot of things are to be replaced.
-- If percentage_to_change > 50, provide full file content in text_or_search_replace_blocks
-- If percentage_to_change <= 50, text_or_search_replace_blocks should be search/replace blocks.
+        description="""Write or edit a file.
+- Set `thread_id` to the value returned by Initialize.
+- Set `percentage_to_change`: estimate what % of existing lines will change (0-100).
+- If percentage_to_change > 50: provide full file content in `text_or_search_replace_blocks`.
+- If percentage_to_change <= 50: provide search/replace blocks in `text_or_search_replace_blocks`.
+- Use absolute paths only (~ allowed).
 """
         + diffinstructions,
         annotations=ToolAnnotations(
@@ -89,10 +81,12 @@ TOOL_PROMPTS = [
     Tool(
         inputSchema=remove_titles_from_schema(ContextSave.model_json_schema()),
         name="ContextSave",
-        description="""
-Saves provided description and file contents of all the relevant file paths or globs in a single text file.
-- Provide random 3 word unique id or whatever user provided.
-- Leave project path as empty string if no project path""",
+        description="""Save task context and relevant files for later resumption.
+- Set `id` to a unique identifier (3 random words or user-provided).
+- Set `project_root_path` to the project root, or empty string if unknown.
+- Set `description` with detailed task context in markdown.
+- Set `relevant_file_globs` to file paths or glob patterns to include.
+""",
         annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
     ),
 ]
