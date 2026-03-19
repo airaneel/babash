@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": ".venv/bin/python",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "mypy-type-checker.interpreter": [
         ".venv/bin/python"
     ],
