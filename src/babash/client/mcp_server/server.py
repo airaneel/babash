@@ -105,6 +105,13 @@ def _get_app_state() -> AppState:
     return _app_state
 
 
+@mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
+async def health_check(request: Any) -> Any:
+    """Liveness/readiness probe for docker-compose and orchestrators."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "server": "babash"})
+
+
 PROMPTS = {
     "KnowledgeTransfer": (
         types.Prompt(
