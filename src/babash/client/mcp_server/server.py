@@ -30,6 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("babash")
 
+CODING_MAX_TOKENS = int(os.getenv("BABASH_CODING_MAX_TOKENS", "24000"))
+NONCODING_MAX_TOKENS = int(os.getenv("BABASH_NONCODING_MAX_TOKENS", "8000"))
+
 
 class Console:
     """Console adapter mapping print/log to Python logging levels."""
@@ -48,16 +51,15 @@ class AppState:
     console: Console
 
 
-# Module-level state set by lifespan, accessed by handlers
+# Module-level state set by lifespan, accessed by handlers.
+# Needed because low-level _server handlers don't receive FastMCP context.
 _app_state: AppState | None = None
-
-# Shell path set before server starts
 _shell_path: str = ""
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
-    """Manage BashState lifecycle — replaces global variables."""
+    """Manage BashState lifecycle."""
     global _app_state
     CONFIG.update(3, 55, 5)
 
@@ -68,16 +70,16 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     starting_dir = os.path.join(tmp_dir, "claude_playground")
 
     with BashState(
-        console,
-        starting_dir,
-        None,
-        None,
-        None,
-        None,
-        True,
-        None,
-        None,
-        _shell_path or None,
+        console=console,
+        working_dir=starting_dir,
+        bash_command_mode=None,
+        file_edit_mode=None,
+        write_if_empty_mode=None,
+        mode=None,
+        use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=_shell_path or None,
     ) as bash_state:
         version = str(metadata.version("babash"))
         console.log("babash version: " + version)
@@ -100,18 +102,18 @@ mcp = FastMCP(
     port=int(os.getenv("BABASH_PORT", "8000")),
 )
 
-# Use the underlying low-level server for handlers with custom schemas
 _server = mcp._mcp_server
 
 
 def _get_app_state() -> AppState:
-    assert _app_state is not None, "Server not initialized"
+    if _app_state is None:
+        raise RuntimeError("Server not initialized — call Initialize first")
     return _app_state
 
 
 @mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
 async def health_check(request: Any) -> Any:
-    """Liveness/readiness probe for docker-compose and orchestrators."""
+    """Liveness/readiness probe."""
     from starlette.responses import JSONResponse
     return JSONResponse({"status": "ok", "server": "babash"})
 
@@ -120,7 +122,7 @@ PROMPTS = {
     "KnowledgeTransfer": (
         types.Prompt(
             name="KnowledgeTransfer",
-            description="Prompt for invoking ContextSave tool in order to do a comprehensive knowledge transfer of a coding task. Prompts to save detailed error log and instructions.",
+            description="Save task context for knowledge transfer or resumption.",
         ),
         KTS,
     )
@@ -155,7 +157,6 @@ async def handle_get_prompt(
 
 @_server.list_tools()  # type: ignore
 async def handle_list_tools() -> list[types.Tool]:
-    """List available tools with custom schemas from TOOL_PROMPTS."""
     return TOOL_PROMPTS
 
 
@@ -179,26 +180,22 @@ async def handle_call_tool(
             default_enc,
             0.0,
             lambda x, y: ("", 0),
-            24000,  # coding_max_tokens
-            8000,  # noncoding_max_tokens
+            CODING_MAX_TOKENS,
+            NONCODING_MAX_TOKENS,
         )
-
     except Exception as e:
+        logger.exception("Tool call failed: %s", name)
         output_or_dones = [f"GOT EXCEPTION while calling tool. Error: {e}"]
 
     content: list[types.TextContent | types.ImageContent | types.EmbeddedResource] = []
     for output_or_done in output_or_dones:
         if isinstance(output_or_done, str):
             if issubclass(tool_type, Initialize):
-                original_message = """
-- Additional important note: as soon as you encounter "The user has chosen to disallow the tool call.", immediately stop doing everything and ask user for the reason.
-
-Initialize call done.
-    """
+                init_message = "\nInitialize call done.\n"
                 if app.custom_instructions:
-                    output_or_done += f"\n{app.custom_instructions}\n{original_message}"
+                    output_or_done += f"\n{app.custom_instructions}\n{init_message}"
                 else:
-                    output_or_done += original_message
+                    output_or_done += init_message
 
             content.append(types.TextContent(type="text", text=output_or_done))
         else:

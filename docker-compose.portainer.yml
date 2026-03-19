@@ -7,6 +7,7 @@ services:
       - BABASH_SERVER_INSTRUCTIONS=${BABASH_SERVER_INSTRUCTIONS:-}
       - BABASH_SHELL=${BABASH_SHELL:-/bin/bash}
       - BABASH_DEBUG=${BABASH_DEBUG:-}
+      - BABASH_HOST=0.0.0.0
     entrypoint: ["babash_mcp", "--transport", "streamable-http"]
     volumes:
       - workspace:/workspace
