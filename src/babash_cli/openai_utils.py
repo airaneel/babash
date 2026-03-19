@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -57,7 +57,9 @@ def get_output_cost(
         item = cast(ChatCompletionAssistantMessageParam, item)
         toolcalls = item["tool_calls"]
         for tool_call in toolcalls or []:
-            output_tokens += len(enc.encode(tool_call["function"]["arguments"]))
+            tc = cast(dict[str, Any], tool_call)
+            if tc.get("type") == "function" and "function" in tc:
+                output_tokens += len(enc.encode(tc["function"]["arguments"]))
     elif isinstance(item, ParsedChatCompletionMessage):
         if item.tool_calls:
             for tool_callf in item.tool_calls:

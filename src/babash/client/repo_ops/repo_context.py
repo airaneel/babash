@@ -264,7 +264,7 @@ if __name__ == "__main__":
     import pstats
     import sys
 
-    from line_profiler import LineProfiler
+    from line_profiler import LineProfiler  # type: ignore[import-not-found]
 
     folder = sys.argv[1]
 

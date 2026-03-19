@@ -7,7 +7,7 @@ import tempfile
 import traceback
 import uuid
 from pathlib import Path
-from typing import DefaultDict, Optional, cast
+from typing import Any, DefaultDict, Optional, cast
 
 import openai
 import petname  # type: ignore[import-untyped]
@@ -269,7 +269,7 @@ def loop(
                         )
                         cost += cost_
                         system_console.print(
-                            f"\n---------------------------------------\n# Assistant invoked tools: {[which_tool(tool['function']['arguments']) for tool in item['tool_calls']]}"
+                            f"\n---------------------------------------\n# Assistant invoked tools: {[which_tool(cast(dict[str, Any], tc)['function']['arguments']) for tc in item['tool_calls'] if cast(dict[str, Any], tc).get('type') == 'function']}"
                         )
                         system_console.print(
                             f"\nTotal cost: {config.cost_unit}{cost:.3f}"
