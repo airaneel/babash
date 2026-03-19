@@ -99,6 +99,97 @@ def get_mode_prompt(context: Context) -> str:
     return mode_prompt
 
 
+def _resume_task(
+    task_id: str,
+    is_first_call: bool,
+    coding_max_tokens: Optional[int],
+    noncoding_max_tokens: Optional[int],
+) -> tuple[str, str, Optional[dict[str, Any]]]:
+    """Returns (memory_text, workspace_path_override, loaded_state)."""
+    if not task_id:
+        return "", "", None
+    if not is_first_call:
+        return "Warning: task can only be resumed in a new conversation. No task loaded.", "", None
+    try:
+        project_root_path, task_mem, loaded_state = load_memory(
+            task_id,
+            coding_max_tokens,
+            noncoding_max_tokens,
+            lambda x: default_enc.encoder(x),
+            lambda x: default_enc.decoder(x),
+        )
+        workspace = project_root_path if os.path.exists(project_root_path) else ""
+        return "Following is the retrieved task:\n" + task_mem, workspace, loaded_state
+    except Exception:
+        return f'Error: Unable to load task with ID "{task_id}" ', "", None
+
+
+def _resolve_workspace(
+    workspace_path: str,
+    is_first_call: bool,
+    read_files_: list[str],
+    mode: ModesConfig,
+) -> tuple[str, Optional[Path], list[str]]:
+    """Returns (repo_context, folder_to_start, read_files_)."""
+    if is_first_call and not workspace_path:
+        tmp_dir = get_tmpdir()
+        workspace_path = os.path.join(tmp_dir, "claude-playground-" + uuid.uuid4().hex[:4])
+
+    if not workspace_path:
+        return "", None, read_files_
+
+    if not os.path.exists(workspace_path):
+        if os.path.abspath(workspace_path):
+            os.makedirs(workspace_path, exist_ok=True)
+            return f"\nInfo: Workspace path {workspace_path} did not exist. I've created it for you.\n", Path(workspace_path), read_files_
+        return f"\nInfo: Workspace path {workspace_path} does not exist.", None, read_files_
+
+    if os.path.isfile(workspace_path):
+        if not read_files_:
+            read_files_ = [workspace_path]
+        workspace_path = os.path.dirname(workspace_path)
+
+    repo_context, folder_to_start = get_repo_context(workspace_path)
+    repo_context = f"---\n# Workspace structure\n{repo_context}\n---\n"
+
+    if isinstance(mode, CodeWriterMode):
+        mode.update_relative_globs(workspace_path)
+
+    return repo_context, folder_to_start, read_files_
+
+
+def _load_alignment_docs(folder_to_start: Optional[Path], console: Any) -> str:
+    """Load CLAUDE.md/AGENTS.md from global and workspace dirs."""
+    alignment = ""
+
+    try:
+        subprocess.run(["which", "rg"], timeout=1, capture_output=True, check=True)
+        alignment += "---\n# Available commands\n\n- Use ripgrep `rg` command instead of `grep` because it's much much faster.\n\n---\n\n"
+    except Exception:
+        pass
+
+    for base_dir, label in [
+        (os.path.join(expanduser("~"), ".babash"), "Important guidelines from the user"),
+        (str(folder_to_start) if folder_to_start else None, None),
+    ]:
+        if not base_dir:
+            continue
+        try:
+            for fname in ("CLAUDE.md", "AGENTS.md"):
+                fpath = os.path.join(base_dir, fname)
+                if not os.path.exists(fpath):
+                    continue
+                with open(fpath, "r") as f:
+                    content = f.read()
+                heading = label or f"{fname} - user shared project guidelines to follow"
+                alignment += f"---\n# {heading}\n```\n{content}\n```\n---\n\n"
+                break
+        except Exception as e:
+            console.log(f"Error reading alignment file in {base_dir}: {e}")
+
+    return alignment
+
+
 def initialize(
     type: Literal["user_asked_change_workspace", "first_call"],
     context: Context,
@@ -110,83 +201,35 @@ def initialize(
     mode: ModesConfig,
     thread_id: str,
 ) -> tuple[str, Context, dict[str, list[tuple[int, int]]]]:
-    # Expand the workspace path
     any_workspace_path = expand_user(any_workspace_path)
-    repo_context = ""
 
-    memory = ""
-    loaded_state = None
-
-    # For workspace/mode changes, ensure we're using an existing state if possible
+    # Validate thread_id for non-first calls
     if type != "first_call" and thread_id != context.bash_state.current_thread_id:
-        # Try to load state from the thread_id
         if not context.bash_state.load_state_from_thread_id(thread_id):
             return (
                 f"Error: No saved bash state found for thread_id `{thread_id}`. Please re-initialize to get a new id or use correct id.",
                 context,
                 {},
             )
-    del (
-        thread_id
-    )  # No use other than loading correct state before doing actual tool related stuff
 
-    # Handle task resumption - this applies only to first_call
-    if type == "first_call" and task_id_to_resume:
-        try:
-            project_root_path, task_mem, loaded_state = load_memory(
-                task_id_to_resume,
-                coding_max_tokens,
-                noncoding_max_tokens,
-                lambda x: default_enc.encoder(x),
-                lambda x: default_enc.decoder(x),
-            )
-            memory = "Following is the retrieved task:\n" + task_mem
-            if os.path.exists(project_root_path):
-                any_workspace_path = project_root_path
+    # Resume task if requested
+    memory, workspace_override, loaded_state = _resume_task(
+        task_id_to_resume, type == "first_call", coding_max_tokens, noncoding_max_tokens
+    )
+    if workspace_override:
+        any_workspace_path = workspace_override
 
-        except Exception:
-            memory = f'Error: Unable to load task with ID "{task_id_to_resume}" '
-    elif task_id_to_resume:
-        memory = (
-            "Warning: task can only be resumed in a new conversation. No task loaded."
-        )
+    # Resolve workspace path
+    repo_context, folder_to_start, read_files_ = _resolve_workspace(
+        any_workspace_path, type == "first_call", read_files_, mode
+    )
 
-    folder_to_start = None
-    if type == "first_call" and not any_workspace_path:
-        tmp_dir = get_tmpdir()
-        any_workspace_path = os.path.join(
-            tmp_dir, "claude-playground-" + uuid.uuid4().hex[:4]
-        )
-
-    if any_workspace_path and os.path.exists(any_workspace_path):
-        if os.path.isfile(any_workspace_path):
-            if not read_files_:
-                read_files_ = [any_workspace_path]
-            any_workspace_path = os.path.dirname(any_workspace_path)
-
-        repo_context, folder_to_start = get_repo_context(any_workspace_path)
-        repo_context = f"---\n# Workspace structure\n{repo_context}\n---\n"
-
-        if isinstance(mode, CodeWriterMode):
-            mode.update_relative_globs(any_workspace_path)
-
-    elif any_workspace_path and os.path.abspath(any_workspace_path):
-        os.makedirs(any_workspace_path, exist_ok=True)
-        repo_context = f"\nInfo: Workspace path {any_workspace_path} did not exist. I've created it for you.\n"
-        folder_to_start = Path(any_workspace_path)
-
-    elif any_workspace_path:
-        repo_context = f"\nInfo: Workspace path {any_workspace_path} does not exist."
-    # Restore bash state if available
+    # Apply mode to bash state
     if loaded_state is not None:
         try:
             snapshot = BashState.parse_state(loaded_state)
-            workspace_root = (
-                str(folder_to_start) if folder_to_start else snapshot.workspace_root
-            )
-            loaded_thread_id = snapshot.thread_id or context.bash_state.current_thread_id
+            workspace_root = str(folder_to_start) if folder_to_start else snapshot.workspace_root
 
-            # Use snapshot's mode config for default mode, otherwise apply requested mode
             if mode == "babash":
                 bcm, fem, wem, mn = snapshot.bash_command_mode, snapshot.file_edit_mode, snapshot.write_if_empty_mode, snapshot.mode
             else:
@@ -195,7 +238,8 @@ def initialize(
 
             cwd = str(folder_to_start) if folder_to_start else workspace_root
             whitelist = {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite}
-            context.bash_state.load_state(bcm, fem, wem, mn, whitelist, cwd, workspace_root, loaded_thread_id)
+            context.bash_state.load_state(bcm, fem, wem, mn, whitelist, cwd, workspace_root,
+                                          snapshot.thread_id or context.bash_state.current_thread_id)
         except ValueError:
             context.console.print(traceback.format_exc())
             context.console.print("Error: couldn't load bash state")
@@ -203,37 +247,22 @@ def initialize(
     else:
         mode_changed = is_mode_change(mode, context.bash_state)
         mode_impl = modes_to_state(mode)
-        new_thread_id = context.bash_state.current_thread_id
-        if type == "first_call":
-            # Recreate thread_id
-            new_thread_id = generate_thread_id()
-        # Use the provided workspace path as the workspace root
+        new_thread_id = generate_thread_id() if type == "first_call" else context.bash_state.current_thread_id
+        folder_str = str(folder_to_start) if folder_to_start else ""
         context.bash_state.load_state(
-            mode_impl.bash_command_mode,
-            mode_impl.file_edit_mode,
-            mode_impl.write_if_empty_mode,
-            mode_impl.mode_name,
-            dict(context.bash_state.whitelist_for_overwrite),
-            str(folder_to_start) if folder_to_start else "",
-            str(folder_to_start) if folder_to_start else "",
-            new_thread_id,
+            mode_impl.bash_command_mode, mode_impl.file_edit_mode, mode_impl.write_if_empty_mode,
+            mode_impl.mode_name, dict(context.bash_state.whitelist_for_overwrite),
+            folder_str, folder_str, new_thread_id,
         )
-        if type == "first_call" or mode_changed:
-            mode_prompt = get_mode_prompt(context)
-        else:
-            mode_prompt = ""
+        mode_prompt = get_mode_prompt(context) if (type == "first_call" or mode_changed) else ""
 
-    del mode
-
+    # Read initial files
     initial_files_context = ""
     initial_paths_with_ranges: dict[str, list[tuple[int, int]]] = {}
     if read_files_:
         if folder_to_start:
             read_files_ = [
-                # Expand the path before checking if it's absolute
-                os.path.join(folder_to_start, f)
-                if not os.path.isabs(expand_user(f))
-                else expand_user(f)
+                os.path.join(folder_to_start, f) if not os.path.isabs(expand_user(f)) else expand_user(f)
                 for f in read_files_
             ]
         initial_files, initial_paths_with_ranges, _ = read_files(
@@ -241,51 +270,7 @@ def initialize(
         )
         initial_files_context = f"---\n# Requested files\nHere are the contents of the requested files:\n{initial_files}\n---\n"
 
-    # Check for global CLAUDE.md and workspace CLAUDE.md
-    alignment_context = ""
-
-    # Check if ripgrep is available and add instruction if it is
-    try:
-        subprocess.run(["which", "rg"], timeout=1, capture_output=True, check=True)
-        alignment_context += "---\n# Available commands\n\n- Use ripgrep `rg` command instead of `grep` because it's much much faster.\n\n---\n\n"
-    except Exception:
-        pass
-
-    # Check for global alignment doc in ~/.babash: prefer CLAUDE.md, else AGENTS.md
-    try:
-        global_dir = os.path.join(expanduser("~"), ".babash")
-        for fname in ("CLAUDE.md", "AGENTS.md"):
-            global_alignment_file_path = os.path.join(global_dir, fname)
-            if os.path.exists(global_alignment_file_path):
-                with open(global_alignment_file_path, "r") as f:
-                    global_alignment_content = f.read()
-                alignment_context += f"---\n# Important guidelines from the user\n```\n{global_alignment_content}\n```\n---\n\n"
-                break
-    except Exception as e:
-        # Log any errors when reading the global file
-        context.console.log(f"Error reading global alignment file: {e}")
-
-    # Then check for workspace-specific alignment doc: prefer CLAUDE.md, else AGENTS.md
-    if folder_to_start:
-        try:
-            base_dir = str(folder_to_start)
-            selected_name = ""
-            alignment_content = ""
-            for fname in ("CLAUDE.md", "AGENTS.md"):
-                alignment_file_path = os.path.join(base_dir, fname)
-                if os.path.exists(alignment_file_path):
-                    with open(alignment_file_path, "r") as f:
-                        alignment_content = f.read()
-                    selected_name = fname
-                    break
-            if alignment_content:
-                alignment_context += f"---\n# {selected_name} - user shared project guidelines to follow\n```\n{alignment_content}\n```\n---\n\n"
-        except Exception as e:
-            # Log any errors when reading the workspace file
-            context.console.log(f"Error reading workspace alignment file: {e}")
-
-    uname_sysname = os.uname().sysname
-    uname_machine = os.uname().machine
+    alignment_context = _load_alignment_docs(folder_to_start, context.console)
 
     output = f"""
 Use thread_id={context.bash_state.current_thread_id} for all babash tool calls which take that.
@@ -293,8 +278,8 @@ Use thread_id={context.bash_state.current_thread_id} for all babash tool calls w
 {mode_prompt}
 
 # Environment
-System: {uname_sysname}
-Machine: {uname_machine}
+System: {os.uname().sysname}
+Machine: {os.uname().machine}
 Initialized in directory (also cwd): {context.bash_state.cwd}
 User home directory: {expanduser("~")}
 
@@ -912,6 +897,72 @@ def parse_tool_by_name(name: str, arguments: dict[str, Any]) -> TOOLS:
         return tool_type(**{k: try_json(v) for k, v in arguments.items()})
 
 
+def _merge_ranges(
+    target: dict[str, list[tuple[int, int]]],
+    source: dict[str, list[tuple[int, int]]],
+) -> None:
+    """Merge file path ranges from source into target."""
+    for path, ranges in source.items():
+        if path in target:
+            target[path].extend(ranges)
+        else:
+            target[path] = list(ranges)
+
+
+def _handle_initialize(
+    arg: Initialize, context: Context,
+    coding_max_tokens: Optional[int], noncoding_max_tokens: Optional[int],
+) -> tuple[tuple[str, float], Context, dict[str, list[tuple[int, int]]]]:
+    """Dispatch Initialize by subtype."""
+    if arg.type in ("user_asked_mode_change", "reset_shell"):
+        workspace_path = (
+            arg.any_workspace_path
+            if os.path.isdir(arg.any_workspace_path)
+            else os.path.dirname(arg.any_workspace_path)
+        )
+        workspace_path = workspace_path if os.path.exists(workspace_path) else ""
+        result = reset_babash(
+            context, workspace_path,
+            arg.mode_name if is_mode_change(arg.mode, context.bash_state) else None,
+            arg.mode, arg.thread_id,
+        )
+        return (result, 0.0), context, {}
+
+    init_type: Literal["user_asked_change_workspace", "first_call"] = arg.type  # type: ignore[assignment]
+    output_, context, init_paths = initialize(
+        init_type, context, arg.any_workspace_path,
+        arg.initial_files_to_read or [], arg.task_id_to_resume,
+        coding_max_tokens, noncoding_max_tokens, arg.mode, arg.thread_id,
+    )
+    return (output_, 0.0), context, init_paths
+
+
+def _handle_context_save(arg: ContextSave, context: Context) -> str:
+    """Handle ContextSave tool call."""
+    relevant_files: list[str] = []
+    warnings = ""
+    arg.project_root_path = os.path.expanduser(arg.project_root_path)
+
+    for fglob in arg.relevant_file_globs:
+        fglob = expand_user(fglob)
+        if not os.path.isabs(fglob) and arg.project_root_path:
+            fglob = os.path.join(arg.project_root_path, fglob)
+        globs = glob.glob(fglob, recursive=True)
+        relevant_files.extend(globs[:1000])
+        if not globs:
+            warnings += f"Warning: No files found for the glob: {fglob}\n"
+
+    relevant_files_data, _, _ = read_files(relevant_files[:10_000], None, None, context)
+    save_path = save_memory(arg, relevant_files_data, context.bash_state.serialize())
+    try_open_file(save_path)
+
+    if not relevant_files and arg.relevant_file_globs:
+        return f'Error: No files found for the given globs. Context file successfully saved at "{save_path}", but please fix the error.'
+    if warnings:
+        return warnings + "\nContext file successfully saved at " + save_path
+    return save_path
+
+
 def get_tool_output(
     context: Context,
     args: dict[object, object] | TOOLS,
@@ -926,166 +977,66 @@ def get_tool_output(
         arg = adapter.validate_python(args)
     else:
         arg = args
-    output: tuple[str | ImageData, float]
 
-    # Initialize a dictionary to track file paths and line ranges
+    output: tuple[str | ImageData, float]
     file_paths_with_ranges: dict[str, list[tuple[int, int]]] = {}
 
     if isinstance(arg, BashCommand):
         context.console.print("Calling execute bash tool")
-
         output_str, cost = execute_bash(
-            context.bash_state,
-            enc,
-            arg,
-            noncoding_max_tokens,
-            arg.action_json.wait_for_seconds,
+            context.bash_state, enc, arg, noncoding_max_tokens, arg.action_json.wait_for_seconds,
         )
         output = output_str, cost
+
     elif isinstance(arg, WriteIfEmpty):
         context.console.print("Calling write file tool")
+        result, paths = write_file(arg, True, coding_max_tokens, noncoding_max_tokens, context)
+        output = result, 0.0
+        _merge_ranges(file_paths_with_ranges, paths)
 
-        result, write_paths = write_file(
-            arg, True, coding_max_tokens, noncoding_max_tokens, context
-        )
-        output = result, 0
-        # Add write paths with their ranges to our tracking dictionary
-        for path, ranges in write_paths.items():
-            if path in file_paths_with_ranges:
-                file_paths_with_ranges[path].extend(ranges)
-            else:
-                file_paths_with_ranges[path] = ranges.copy()
     elif isinstance(arg, FileEdit):
         context.console.print("Calling full file edit tool")
-
-        result, edit_paths = do_diff_edit(
-            arg, coding_max_tokens, noncoding_max_tokens, context
-        )
+        result, paths = do_diff_edit(arg, coding_max_tokens, noncoding_max_tokens, context)
         output = result, 0.0
-        # Add edit paths with their ranges to our tracking dictionary
-        for path, ranges in edit_paths.items():
-            if path in file_paths_with_ranges:
-                file_paths_with_ranges[path].extend(ranges)
-            else:
-                file_paths_with_ranges[path] = ranges.copy()
+        _merge_ranges(file_paths_with_ranges, paths)
+
     elif isinstance(arg, FileWriteOrEdit):
         context.console.print("Calling file writing tool")
-
-        result, write_edit_paths = file_writing(
-            arg, coding_max_tokens, noncoding_max_tokens, context
-        )
+        result, paths = file_writing(arg, coding_max_tokens, noncoding_max_tokens, context)
         output = result, 0.0
-        # Add write/edit paths with their ranges to our tracking dictionary
-        for path, ranges in write_edit_paths.items():
-            if path in file_paths_with_ranges:
-                file_paths_with_ranges[path].extend(ranges)
-            else:
-                file_paths_with_ranges[path] = ranges.copy()
+        _merge_ranges(file_paths_with_ranges, paths)
+
     elif isinstance(arg, ReadImage):
         context.console.print("Calling read image tool")
-        image_data = read_image_from_shell(arg.file_path, context)
-        output = image_data, 0.0
+        output = read_image_from_shell(arg.file_path, context), 0.0
+
     elif isinstance(arg, ReadFiles):
         context.console.print("Calling read file tool")
-        # Access line numbers through properties
-        result, file_ranges_dict, _ = read_files(
-            arg.file_paths,
-            coding_max_tokens,
-            noncoding_max_tokens,
-            context,
-            arg.start_line_nums,
-            arg.end_line_nums,
+        result, paths, _ = read_files(
+            arg.file_paths, coding_max_tokens, noncoding_max_tokens, context,
+            arg.start_line_nums, arg.end_line_nums,
         )
         output = result, 0.0
+        _merge_ranges(file_paths_with_ranges, paths)
 
-        # Merge the new file ranges into our tracking dictionary
-        for path, ranges in file_ranges_dict.items():
-            if path in file_paths_with_ranges:
-                file_paths_with_ranges[path].extend(ranges)
-            else:
-                file_paths_with_ranges[path] = ranges
     elif isinstance(arg, Initialize):
         context.console.print("Calling initial info tool")
-        if arg.type == "user_asked_mode_change" or arg.type == "reset_shell":
-            workspace_path = (
-                arg.any_workspace_path
-                if os.path.isdir(arg.any_workspace_path)
-                else os.path.dirname(arg.any_workspace_path)
-            )
-            workspace_path = workspace_path if os.path.exists(workspace_path) else ""
-
-            # For these specific operations, thread_id is required
-            output = (
-                reset_babash(
-                    context,
-                    workspace_path,
-                    arg.mode_name
-                    if is_mode_change(arg.mode, context.bash_state)
-                    else None,
-                    arg.mode,
-                    arg.thread_id,
-                ),
-                0.0,
-            )
-        else:
-            output_, context, init_paths = initialize(
-                arg.type,
-                context,
-                arg.any_workspace_path,
-                arg.initial_files_to_read or [],
-                arg.task_id_to_resume,
-                coding_max_tokens,
-                noncoding_max_tokens,
-                arg.mode,
-                arg.thread_id,
-            )
-            output = output_, 0.0
-            # Since init_paths is already a dictionary mapping file paths to line ranges,
-            # we just need to merge it with our tracking dictionary
-            for path, ranges in init_paths.items():
-                if path not in file_paths_with_ranges and os.path.exists(path):
-                    file_paths_with_ranges[path] = ranges
-                elif path in file_paths_with_ranges:
-                    file_paths_with_ranges[path].extend(ranges)
+        output, context, init_paths = _handle_initialize(
+            arg, context, coding_max_tokens, noncoding_max_tokens
+        )
+        _merge_ranges(file_paths_with_ranges, {
+            p: r for p, r in init_paths.items() if os.path.exists(p)
+        })
 
     elif isinstance(arg, ContextSave):
         context.console.print("Calling task memory tool")
-        relevant_files = []
-        warnings = ""
-        # Expand user in project root path
-        arg.project_root_path = os.path.expanduser(arg.project_root_path)
-        for fglob in arg.relevant_file_globs:
-            # Expand user in glob pattern before checking if it's absolute
-            fglob = expand_user(fglob)
-            # If not absolute after expansion, join with project root path
-            if not os.path.isabs(fglob) and arg.project_root_path:
-                fglob = os.path.join(arg.project_root_path, fglob)
-            globs = glob.glob(fglob, recursive=True)
-            relevant_files.extend(globs[:1000])
-            if not globs:
-                warnings += f"Warning: No files found for the glob: {fglob}\n"
-        relevant_files_data, _, _ = read_files(
-            relevant_files[:10_000], None, None, context
-        )
-        save_path = save_memory(
-            arg, relevant_files_data, context.bash_state.serialize()
-        )
-        if not relevant_files and arg.relevant_file_globs:
-            output_ = f'Error: No files found for the given globs. Context file successfully saved at "{save_path}", but please fix the error.'
-        elif warnings:
-            output_ = warnings + "\nContext file successfully saved at " + save_path
-        else:
-            output_ = save_path
-        # Try to open the saved file
-        try_open_file(save_path)
-        output = output_, 0.0
+        output = _handle_context_save(arg, context), 0.0
+
     else:
         raise ValueError(f"Unknown tool: {arg}")
 
-    if file_paths_with_ranges:  # Only add to whitelist if we have paths
+    if file_paths_with_ranges:
         context.bash_state.add_to_whitelist_for_overwrite(file_paths_with_ranges)
-
-    # Save bash_state
     context.bash_state.save_state_to_disk()
 
     if isinstance(output[0], str):
