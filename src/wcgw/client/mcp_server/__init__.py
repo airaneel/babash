@@ -18,6 +18,12 @@ def app(
     shell: str = typer.Option(
         "", "--shell", help="Path to shell executable (defaults to $SHELL or /bin/bash)"
     ),
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        "-t",
+        help="Transport: stdio or streamable-http",
+    ),
 ) -> None:
     """Main entry point for the package."""
     if version:
@@ -25,7 +31,11 @@ def app(
         print(f"wcgw version: {version_}")
         raise typer.Exit()
 
-    asyncio.run(server.main(shell))
+    if transport == "streamable-http":
+        server._shell_path = shell
+        server.mcp.run(transport="streamable-http")
+    else:
+        asyncio.run(server.main(shell))
 
 
 # Optionally expose other important items at package level

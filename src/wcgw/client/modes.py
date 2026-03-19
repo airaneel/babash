@@ -43,6 +43,7 @@ class ModeImpl:
     bash_command_mode: BashCommandMode
     file_edit_mode: FileEditMode
     write_if_empty_mode: WriteIfEmptyMode
+    mode_name: Modes
 
 
 def code_writer_prompt(
@@ -76,7 +77,7 @@ You are now running in "code_writer" mode.
     if all_write_new_globs != "all":
         if all_write_new_globs:
             path_prompt = f"""
-    - You are allowed to write files files matching only the following globs: {", ".join(allowed_file_edit_globs)}
+    - You are allowed to write files matching only the following globs: {", ".join(all_write_new_globs)}
 """
         else:
             path_prompt = """
@@ -157,46 +158,41 @@ DEFAULT_MODES: dict[Modes, ModeImpl] = {
         bash_command_mode=BashCommandMode("normal_mode", "all"),
         write_if_empty_mode=WriteIfEmptyMode("all"),
         file_edit_mode=FileEditMode("all"),
+        mode_name="wcgw",
     ),
     "architect": ModeImpl(
         bash_command_mode=BashCommandMode("restricted_mode", "all"),
         write_if_empty_mode=WriteIfEmptyMode([]),
         file_edit_mode=FileEditMode([]),
+        mode_name="architect",
     ),
     "code_writer": ModeImpl(
         bash_command_mode=BashCommandMode("normal_mode", "all"),
         write_if_empty_mode=WriteIfEmptyMode("all"),
         file_edit_mode=FileEditMode("all"),
+        mode_name="code_writer",
     ),
 }
 
 
 def modes_to_state(
     mode: ModesConfig,
-) -> tuple[BashCommandMode, FileEditMode, WriteIfEmptyMode, Modes]:
+) -> ModeImpl:
     # First get default mode config
     if isinstance(mode, str):
-        mode_impl = DEFAULT_MODES[mode]  # converts str to Modes enum
-        mode_name: Modes = mode
+        return DEFAULT_MODES[mode]
     else:
         # For CodeWriterMode, use code_writer as base and override
-        mode_impl = DEFAULT_MODES["code_writer"]
-        # Override with custom settings from CodeWriterMode
-        mode_impl = ModeImpl(
+        base = DEFAULT_MODES["code_writer"]
+        return ModeImpl(
             bash_command_mode=BashCommandMode(
-                mode_impl.bash_command_mode.bash_mode,
+                base.bash_command_mode.bash_mode,
                 "all" if mode.allowed_commands else "none",
             ),
             file_edit_mode=FileEditMode(mode.allowed_globs),
             write_if_empty_mode=WriteIfEmptyMode(mode.allowed_globs),
+            mode_name="code_writer",
         )
-        mode_name = "code_writer"
-    return (
-        mode_impl.bash_command_mode,
-        mode_impl.file_edit_mode,
-        mode_impl.write_if_empty_mode,
-        mode_name,
-    )
 
 
 WCGW_KT = """Use `ContextSave` tool to do a knowledge transfer of the task in hand.

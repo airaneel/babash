@@ -93,6 +93,6 @@ TOOL_PROMPTS = [
 Saves provided description and file contents of all the relevant file paths or globs in a single text file.
 - Provide random 3 word unique id or whatever user provided.
 - Leave project path as empty string if no project path""",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
     ),
 ]

@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Any, List, Literal, Optional, Protocol, Sequence, Union
+from typing import Any, Literal, Optional, Protocol, Sequence, Union
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import Field, PrivateAttr, model_serializer, model_validator
@@ -9,6 +9,13 @@ from pydantic import Field, PrivateAttr, model_serializer, model_validator
 def normalize_thread_id(thread_id: str) -> str:
     """Normalize thread_id by keeping only word characters (alphanumeric and underscore)."""
     return re.sub(r"[^\w]", "", thread_id)
+
+
+def _patch_singleton_all(value: Literal["all"] | list[str]) -> Literal["all"] | list[str]:
+    """Patch ["all"] to "all" — handles frequent LLM output quirk."""
+    if isinstance(value, list) and len(value) == 1 and value[0] == "all":
+        return "all"
+    return value
 
 
 class NoExtraArgs(PydanticBaseModel):
@@ -27,14 +34,8 @@ class CodeWriterMode(BaseModel):
     allowed_commands: Literal["all"] | list[str]
 
     def model_post_init(self, _: Any) -> None:
-        # Patch frequently wrong output trading off accuracy
-        # in rare case there's a file named 'all' or a command named 'all'
-        if isinstance(self.allowed_commands, list) and len(self.allowed_commands) == 1:
-            if self.allowed_commands[0] == "all":
-                self.allowed_commands = "all"
-        if isinstance(self.allowed_globs, list) and len(self.allowed_globs) == 1:
-            if self.allowed_globs[0] == "all":
-                self.allowed_globs = "all"
+        self.allowed_commands = _patch_singleton_all(self.allowed_commands)
+        self.allowed_globs = _patch_singleton_all(self.allowed_globs)
 
     def update_relative_globs(self, workspace_root: str) -> None:
         """Update globs if they're relative paths"""
@@ -84,17 +85,8 @@ class Initialize(BaseModel):
             assert self.allowed_commands is not None, (
                 "allowed_commands can't be null when the mode is code_writer"
             )
-            # Patch frequently wrong output trading off accuracy
-            # in rare case there's a file named 'all' or a command named 'all'
-            if (
-                isinstance(self.allowed_commands, list)
-                and len(self.allowed_commands) == 1
-            ):
-                if self.allowed_commands[0] == "all":
-                    self.allowed_commands = "all"
-            if isinstance(self.allowed_globs, list) and len(self.allowed_globs) == 1:
-                if self.allowed_globs[0] == "all":
-                    self.allowed_globs = "all"
+            self.allowed_commands = _patch_singleton_all(self.allowed_commands)
+            self.allowed_globs = _patch_singleton_all(self.allowed_globs)
         if self.type != "first_call" and not self.thread_id:
             raise ValueError(
                 "Thread id should be provided if type != 'first_call', including when resetting"
@@ -234,20 +226,20 @@ class WriteIfEmpty(BaseModel):
 
 class ReadFiles(BaseModel):
     file_paths: list[str]
-    _start_line_nums: List[Optional[int]] = PrivateAttr(default_factory=lambda: [])
-    _end_line_nums: List[Optional[int]] = PrivateAttr(default_factory=lambda: [])
+    _start_line_nums: list[int | None] = PrivateAttr(default_factory=lambda: [])
+    _end_line_nums: list[int | None] = PrivateAttr(default_factory=lambda: [])
 
     @property
     def show_line_numbers_reason(self) -> str:
         return "True"
 
     @property
-    def start_line_nums(self) -> List[Optional[int]]:
+    def start_line_nums(self) -> list[int | None]:
         """Get the start line numbers."""
         return self._start_line_nums
 
     @property
-    def end_line_nums(self) -> List[Optional[int]]:
+    def end_line_nums(self) -> list[int | None]:
         """Get the end line numbers."""
         return self._end_line_nums
 

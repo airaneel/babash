@@ -1,13 +1,13 @@
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from importlib import metadata
 from typing import Any
 
-import mcp.server.stdio
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
-from pydantic import AnyUrl
+from mcp.server.fastmcp import FastMCP
 
 from wcgw.client.modes import KTS
 from wcgw.client.tool_prompts import TOOL_PROMPTS
@@ -15,7 +15,7 @@ from wcgw.client.tool_prompts import TOOL_PROMPTS
 from ...types_ import (
     Initialize,
 )
-from ..bash_state.bash_state import CONFIG, BashState, get_tmpdir
+from ..bash_state import CONFIG, BashState, get_tmpdir
 from ..tools import (
     Context,
     default_enc,
@@ -23,8 +23,6 @@ from ..tools import (
     parse_tool_by_name,
     which_tool_name,
 )
-
-server: Server[Any] = Server("wcgw")
 
 # Log only time stamp
 logging.basicConfig(level=logging.INFO, format="%(asctime)s: %(message)s")
@@ -39,14 +37,67 @@ class Console:
         logger.info(msg)
 
 
-@server.list_resources()  # type: ignore
-async def handle_list_resources() -> list[types.Resource]:
-    return []
+@dataclass
+class AppState:
+    bash_state: BashState
+    custom_instructions: str | None
+    console: Console
 
 
-@server.read_resource()  # type: ignore
-async def handle_read_resource(uri: AnyUrl) -> str:
-    raise ValueError("No resources available")
+# Module-level state set by lifespan, accessed by handlers
+_app_state: AppState | None = None
+
+# Shell path set before server starts
+_shell_path: str = ""
+
+
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
+    """Manage BashState lifecycle — replaces global variables."""
+    global _app_state
+    CONFIG.update(3, 55, 5)
+
+    custom_instructions = os.getenv("WCGW_SERVER_INSTRUCTIONS")
+    console = Console()
+
+    tmp_dir = get_tmpdir()
+    starting_dir = os.path.join(tmp_dir, "claude_playground")
+
+    with BashState(
+        console,
+        starting_dir,
+        None,
+        None,
+        None,
+        None,
+        True,
+        None,
+        None,
+        _shell_path or None,
+    ) as bash_state:
+        version = str(metadata.version("wcgw"))
+        console.log("wcgw version: " + version)
+        state = AppState(
+            bash_state=bash_state,
+            custom_instructions=custom_instructions,
+            console=console,
+        )
+        _app_state = state
+        try:
+            yield state
+        finally:
+            _app_state = None
+
+
+mcp = FastMCP("wcgw", lifespan=app_lifespan)
+
+# Use the underlying low-level server for handlers with custom schemas
+_server = mcp._mcp_server
+
+
+def _get_app_state() -> AppState:
+    assert _app_state is not None, "Server not initialized"
+    return _app_state
 
 
 PROMPTS = {
@@ -60,52 +111,54 @@ PROMPTS = {
 }
 
 
-@server.list_prompts()  # type: ignore
+@_server.list_resources()  # type: ignore
+async def handle_list_resources() -> list[types.Resource]:
+    return []
+
+
+@_server.list_prompts()  # type: ignore
 async def handle_list_prompts() -> list[types.Prompt]:
     return [x[0] for x in PROMPTS.values()]
 
 
-@server.get_prompt()  # type: ignore
+@_server.get_prompt()  # type: ignore
 async def handle_get_prompt(
     name: str, arguments: dict[str, str] | None
 ) -> types.GetPromptResult:
-    assert BASH_STATE
+    app = _get_app_state()
     messages = [
         types.PromptMessage(
             role="user",
             content=types.TextContent(
-                type="text", text=PROMPTS[name][1][BASH_STATE.mode]
+                type="text", text=PROMPTS[name][1][app.bash_state.mode]
             ),
         )
     ]
     return types.GetPromptResult(messages=messages)
 
 
-@server.list_tools()  # type: ignore
+@_server.list_tools()  # type: ignore
 async def handle_list_tools() -> list[types.Tool]:
-    """
-    List available tools.
-    Each tool specifies its arguments using JSON Schema validation.
-    """
-
+    """List available tools with custom schemas from TOOL_PROMPTS."""
     return TOOL_PROMPTS
 
 
-@server.call_tool()  # type: ignore
+@_server.call_tool()  # type: ignore
 async def handle_call_tool(
     name: str, arguments: dict[str, Any] | None
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    global BASH_STATE
     if not arguments:
         raise ValueError("Missing arguments")
+
+    app = _get_app_state()
+    bash_state = app.bash_state
 
     tool_type = which_tool_name(name)
     tool_call = parse_tool_by_name(name, arguments)
 
     try:
-        assert BASH_STATE
         output_or_dones, _ = get_tool_output(
-            Context(BASH_STATE, BASH_STATE.console),
+            Context(bash_state, bash_state.console),
             tool_call,
             default_enc,
             0.0,
@@ -121,16 +174,13 @@ async def handle_call_tool(
     for output_or_done in output_or_dones:
         if isinstance(output_or_done, str):
             if issubclass(tool_type, Initialize):
-                # Prepare the original hardcoded message
                 original_message = """
 - Additional important note: as soon as you encounter "The user has chosen to disallow the tool call.", immediately stop doing everything and ask user for the reason.
 
 Initialize call done.
     """
-
-                # If custom instructions exist, prepend them to the original message
-                if CUSTOM_INSTRUCTIONS:
-                    output_or_done += f"\n{CUSTOM_INSTRUCTIONS}\n{original_message}"
+                if app.custom_instructions:
+                    output_or_done += f"\n{app.custom_instructions}\n{original_message}"
                 else:
                     output_or_done += original_message
 
@@ -147,47 +197,7 @@ Initialize call done.
     return content
 
 
-BASH_STATE = None
-CUSTOM_INSTRUCTIONS = None
-
-
 async def main(shell_path: str = "") -> None:
-    global BASH_STATE, CUSTOM_INSTRUCTIONS
-    CONFIG.update(3, 55, 5)
-    version = str(metadata.version("wcgw"))
-
-    # Read custom instructions from environment variable
-    CUSTOM_INSTRUCTIONS = os.getenv("WCGW_SERVER_INSTRUCTIONS")
-
-    # starting_dir is inside tmp dir
-    tmp_dir = get_tmpdir()
-    starting_dir = os.path.join(tmp_dir, "claude_playground")
-
-    with BashState(
-        Console(),
-        starting_dir,
-        None,
-        None,
-        None,
-        None,
-        True,
-        None,
-        None,
-        shell_path or None,
-    ) as BASH_STATE:
-        BASH_STATE.console.log("wcgw version: " + version)
-        # Run the server using stdin/stdout streams
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="wcgw",
-                    server_version=version,
-                    capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    ),
-                ),
-                raise_exceptions=False,
-            )
+    global _shell_path
+    _shell_path = shell_path
+    await mcp.run_stdio_async()

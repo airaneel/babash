@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 
 import pytest
 
-from wcgw.client.bash_state.bash_state import BashState, FileWhitelistData
+from wcgw.client.bash_state import BashState, FileWhitelistData
 from wcgw.client.tools import Context, read_file, read_files
 
 

@@ -30,7 +30,7 @@ from syntax_checker import Output as SCOutput
 from syntax_checker import check_syntax as raw_check_syntax
 from wcmatch import glob as wcglob
 
-from ..client.bash_state.bash_state import (
+from ..client.bash_state import (
     BashState,
     execute_bash,
     generate_thread_id,
@@ -191,34 +191,31 @@ def initialize(
     # Restore bash state if available
     if loaded_state is not None:
         try:
-            parsed_state = BashState.parse_state(loaded_state)
+            snapshot = BashState.parse_state(loaded_state)
             workspace_root = (
-                str(folder_to_start) if folder_to_start else parsed_state[5]
+                str(folder_to_start) if folder_to_start else snapshot.workspace_root
             )
-            loaded_thread_id = parsed_state[6] if len(parsed_state) > 6 else None
-
-            if not loaded_thread_id:
-                loaded_thread_id = context.bash_state.current_thread_id
+            loaded_thread_id = snapshot.thread_id or context.bash_state.current_thread_id
 
             if mode == "wcgw":
                 context.bash_state.load_state(
-                    parsed_state[0],
-                    parsed_state[1],
-                    parsed_state[2],
-                    parsed_state[3],
-                    {**parsed_state[4], **context.bash_state.whitelist_for_overwrite},
+                    snapshot.bash_command_mode,
+                    snapshot.file_edit_mode,
+                    snapshot.write_if_empty_mode,
+                    snapshot.mode,
+                    {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite},
                     str(folder_to_start) if folder_to_start else workspace_root,
                     workspace_root,
                     loaded_thread_id,
                 )
             else:
-                state = modes_to_state(mode)
+                mode_impl = modes_to_state(mode)
                 context.bash_state.load_state(
-                    state[0],
-                    state[1],
-                    state[2],
-                    state[3],
-                    {**parsed_state[4], **context.bash_state.whitelist_for_overwrite},
+                    mode_impl.bash_command_mode,
+                    mode_impl.file_edit_mode,
+                    mode_impl.write_if_empty_mode,
+                    mode_impl.mode_name,
+                    {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite},
                     str(folder_to_start) if folder_to_start else workspace_root,
                     workspace_root,
                     loaded_thread_id,
@@ -230,17 +227,17 @@ def initialize(
         mode_prompt = get_mode_prompt(context)
     else:
         mode_changed = is_mode_change(mode, context.bash_state)
-        state = modes_to_state(mode)
+        mode_impl = modes_to_state(mode)
         new_thread_id = context.bash_state.current_thread_id
         if type == "first_call":
             # Recreate thread_id
             new_thread_id = generate_thread_id()
         # Use the provided workspace path as the workspace root
         context.bash_state.load_state(
-            state[0],
-            state[1],
-            state[2],
-            state[3],
+            mode_impl.bash_command_mode,
+            mode_impl.file_edit_mode,
+            mode_impl.write_if_empty_mode,
+            mode_impl.mode_name,
             dict(context.bash_state.whitelist_for_overwrite),
             str(folder_to_start) if folder_to_start else "",
             str(folder_to_start) if folder_to_start else "",
@@ -342,14 +339,13 @@ User home directory: {expanduser("~")}
 
 
 def is_mode_change(mode_config: ModesConfig, bash_state: BashState) -> bool:
-    allowed = modes_to_state(mode_config)
-    bash_allowed = (
-        bash_state.bash_command_mode,
-        bash_state.file_edit_mode,
-        bash_state.write_if_empty_mode,
-        bash_state.mode,
+    mode_impl = modes_to_state(mode_config)
+    return (
+        mode_impl.bash_command_mode != bash_state.bash_command_mode
+        or mode_impl.file_edit_mode != bash_state.file_edit_mode
+        or mode_impl.write_if_empty_mode != bash_state.write_if_empty_mode
+        or mode_impl.mode_name != bash_state.mode
     )
-    return allowed != bash_allowed
 
 
 def reset_wcgw(
@@ -372,16 +368,14 @@ def reset_wcgw(
             assert isinstance(change_mode, str)
 
         # Get new state configuration
-        bash_command_mode, file_edit_mode, write_if_empty_mode, mode = modes_to_state(
-            change_mode
-        )
+        mode_impl = modes_to_state(change_mode)
 
         # Reset shell with new mode, using the provided thread_id
         context.bash_state.load_state(
-            bash_command_mode,
-            file_edit_mode,
-            write_if_empty_mode,
-            mode,
+            mode_impl.bash_command_mode,
+            mode_impl.file_edit_mode,
+            mode_impl.write_if_empty_mode,
+            mode_impl.mode_name,
             dict(context.bash_state.whitelist_for_overwrite),
             starting_directory,
             starting_directory,
@@ -943,9 +937,6 @@ def parse_tool_by_name(name: str, arguments: dict[str, Any]) -> TOOLS:
         return tool_type(**{k: try_json(v) for k, v in arguments.items()})
 
 
-TOOL_CALLS: list[TOOLS] = []
-
-
 def get_tool_output(
     context: Context,
     args: dict[object, object] | TOOLS,
@@ -955,14 +946,12 @@ def get_tool_output(
     coding_max_tokens: Optional[int],
     noncoding_max_tokens: Optional[int],
 ) -> tuple[list[str | ImageData], float]:
-    global TOOL_CALLS
     if isinstance(args, dict):
         adapter = TypeAdapter[TOOLS](TOOLS, config={"extra": "forbid"})
         arg = adapter.validate_python(args)
     else:
         arg = args
     output: tuple[str | ImageData, float]
-    TOOL_CALLS.append(arg)
 
     # Initialize a dictionary to track file paths and line ranges
     file_paths_with_ranges: dict[str, list[tuple[int, int]]] = {}
@@ -1339,6 +1328,8 @@ if __name__ == "__main__":
         None,
         None,
         True,
+        None,
+        None,
         None,
     ) as BASH_STATE:
         print(

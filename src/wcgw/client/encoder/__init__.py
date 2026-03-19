@@ -1,5 +1,8 @@
+import os
 import threading
 from typing import Callable, Protocol, TypeVar, cast
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import tokenizers  # type: ignore[import-untyped]
 
