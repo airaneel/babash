@@ -21,11 +21,11 @@ TOOL_PROMPTS = [
         inputSchema=remove_titles_from_schema(Initialize.model_json_schema()),
         name="Initialize",
         description="""
-- Always call this at the start of the conversation before using any of the shell tools from wcgw.
+- Always call this at the start of the conversation before using any of the shell tools from babash.
 - Use `any_workspace_path` to initialize the shell in the appropriate project directory.
 - If the user has mentioned a workspace or project root or any other file or folder use it to set `any_workspace_path`.
 - If user has mentioned any files use `initial_files_to_read` to read, use absolute paths only (~ allowed)
-- By default use mode "wcgw"
+- By default use mode "babash"
 - In "code-writer" mode, set the commands and globs which user asked to set, otherwise use 'all'.
 - Use type="first_call" if it's the first call to this tool.
 - Use type="user_asked_mode_change" if in a conversation user has asked to change mode.

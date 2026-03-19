@@ -90,7 +90,7 @@ You are now running in "code_writer" mode.
     - Do not use echo/cat to write any file, always use FileWriteOrEdit tool to create/update files.
     - Do not provide code snippets unless asked by the user, instead directly add/edit the code.
     - You should use the provided bash execution, reading and writing file tools to complete objective.
-    - Do not use artifacts if you have access to the repository and not asked by the user to provide artifacts/snippets. Directly create/update using wcgw tools.
+    - Do not use artifacts if you have access to the repository and not asked by the user to provide artifacts/snippets. Directly create/update using babash tools.
 """
 
     command_prompt = f"""
@@ -119,7 +119,7 @@ WCGW_PROMPT = """
     - You should use the provided bash execution, reading and writing file tools to complete objective.
     - Do not provide code snippets unless asked by the user, instead directly add/edit the code.
     - Do not install new tools/packages before ensuring no such tools/package or an alternative already exists.
-    - Do not use artifacts if you have access to the repository and not asked by the user to provide artifacts/snippets. Directly create/update using wcgw tools
+    - Do not use artifacts if you have access to the repository and not asked by the user to provide artifacts/snippets. Directly create/update using babash tools
     - Do not use Ctrl-c or interrupt commands without asking the user, because often the programs don't show any update but they still are running.
     - Do not use echo/cat to write any file, always use FileWriteOrEdit tool to create/update files.
     - You can share task summary directly without creating any file.
@@ -154,11 +154,11 @@ Respond only after doing the following:
 
 
 DEFAULT_MODES: dict[Modes, ModeImpl] = {
-    "wcgw": ModeImpl(
+    "babash": ModeImpl(
         bash_command_mode=BashCommandMode("normal_mode", "all"),
         write_if_empty_mode=WriteIfEmptyMode("all"),
         file_edit_mode=FileEditMode("all"),
-        mode_name="wcgw",
+        mode_name="babash",
     ),
     "architect": ModeImpl(
         bash_command_mode=BashCommandMode("restricted_mode", "all"),
@@ -212,7 +212,7 @@ Format the `description` field using Markdown with the following sections.
 
 Provide all relevant file paths in order to understand and solve the the task. Err towards providing more file paths than fewer.
 
-(Note to self: this conversation can then be resumed later asking "Resume wcgw task `<generated id>`" which should call Initialize tool)
+(Note to self: this conversation can then be resumed later asking "Resume babash task `<generated id>`" which should call Initialize tool)
 """
 
 
@@ -230,7 +230,7 @@ Format the `description` field using Markdown with the following sections.
 
 Provide all relevant file paths in order to understand and solve the the task. Err towards providing more file paths than fewer.
 
-(Note to self: this conversation can then be resumed later asking "Resume wcgw task `<generated id>`" which should call Initialize tool)
+(Note to self: this conversation can then be resumed later asking "Resume babash task `<generated id>`" which should call Initialize tool)
 """
 
-KTS = {"wcgw": WCGW_KT, "architect": ARCHITECT_KT, "code_writer": WCGW_KT}
+KTS = {"babash": WCGW_KT, "architect": ARCHITECT_KT, "code_writer": WCGW_KT}

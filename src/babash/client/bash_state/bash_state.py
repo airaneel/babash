@@ -78,7 +78,7 @@ class BashState:
         self._write_if_empty_mode: WriteIfEmptyMode = (
             write_if_empty_mode or WriteIfEmptyMode("all")
         )
-        self._mode: Modes = mode or "wcgw"
+        self._mode: Modes = mode or "babash"
         self._whitelist_for_overwrite: dict[str, FileWhitelistData] = (
             whitelist_for_overwrite or {}
         )

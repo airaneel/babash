@@ -2,7 +2,7 @@
 Tests for the bash statement parser.
 """
 
-from wcgw.client.bash_state.parser.bash_statement_parser import BashStatementParser
+from babash.client.bash_state.parser.bash_statement_parser import BashStatementParser
 
 
 def test_bash_statement_parser_basic() -> None:

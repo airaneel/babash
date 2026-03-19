@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 import traceback
 from typing import TYPE_CHECKING, Optional
@@ -330,8 +331,12 @@ def _execute_bash(
             tokens = enc.encoder(incremental_text)
 
             if max_tokens and len(tokens) >= max_tokens:
-                incremental_text = "(...truncated)\n" + enc.decoder(
-                    tokens[-(max_tokens - 1) :]
+                saved = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+                saved.write(incremental_text.encode())
+                saved.close()
+                incremental_text = (
+                    f"(...truncated, full output saved to {saved.name})\n"
+                    + enc.decoder(tokens[-(max_tokens - 1) :])
                 )
 
             if is_interrupt:
@@ -362,7 +367,13 @@ You may want to try Ctrl-c again or program specific exit interactive commands.
 
     tokens = enc.encoder(output)
     if max_tokens and len(tokens) >= max_tokens:
-        output = "(...truncated)\n" + enc.decoder(tokens[-(max_tokens - 1) :])
+        saved = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        saved.write(output.encode())
+        saved.close()
+        output = (
+            f"(...truncated, full output saved to {saved.name})\n"
+            + enc.decoder(tokens[-(max_tokens - 1) :])
+        )
 
     try:
         exit_status = get_status(bash_state, is_bg)

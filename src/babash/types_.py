@@ -26,7 +26,7 @@ class NoExtraArgs(PydanticBaseModel):
 BaseModel = NoExtraArgs
 
 
-Modes = Literal["wcgw", "architect", "code_writer"]
+Modes = Literal["babash", "architect", "code_writer"]
 
 
 class CodeWriterMode(BaseModel):
@@ -46,7 +46,7 @@ class CodeWriterMode(BaseModel):
             ]
 
 
-ModesConfig = Union[Literal["wcgw", "architect"], CodeWriterMode]
+ModesConfig = Union[Literal["babash", "architect"], CodeWriterMode]
 
 
 class Initialize(BaseModel):
@@ -63,7 +63,7 @@ class Initialize(BaseModel):
         description="Array of one or more files to read. Provide [] if no files mentioned."
     )
     task_id_to_resume: str
-    mode_name: Literal["wcgw", "architect", "code_writer"]
+    mode_name: Literal["babash", "architect", "code_writer"]
     thread_id: str = Field(
         description="Use the thread_id created in first_call, leave it as empty string if first_call"
     )
@@ -95,8 +95,8 @@ class Initialize(BaseModel):
 
     @property
     def mode(self) -> ModesConfig:
-        if self.mode_name == "wcgw":
-            return "wcgw"
+        if self.mode_name == "babash":
+            return "babash"
         if self.mode_name == "architect":
             return "architect"
         assert self.allowed_globs is not None, (

@@ -12,9 +12,9 @@ from mcp.types import (
 from mcp.types import Tool as ToolParam
 from pydantic import ValidationError
 
-from wcgw.client.bash_state.bash_state import CONFIG, BashState
-from wcgw.client.mcp_server import server
-from wcgw.client.mcp_server.server import (
+from babash.client.bash_state.bash_state import CONFIG, BashState
+from babash.client.mcp_server import server
+from babash.client.mcp_server.server import (
     Console,
     handle_call_tool,
     handle_get_prompt,
@@ -36,7 +36,7 @@ def setup_bash_state():
 
     # Create new BashState with mode
     home_dir = os.path.expanduser("~")
-    bash_state = BashState(Console(), home_dir, None, None, None, "wcgw", False, None)
+    bash_state = BashState(Console(), home_dir, None, None, None, "babash", False, None)
     server.BASH_STATE = bash_state
 
     try:
@@ -129,7 +129,7 @@ async def test_handle_list_tools():
             properties = tool.inputSchema["properties"]
             assert "mode_name" in properties
             assert properties["mode_name"]["enum"] == [
-                "wcgw",
+                "babash",
                 "architect",
                 "code_writer",
             ]
@@ -171,7 +171,7 @@ async def test_handle_call_tool(setup_bash_state):
         "any_workspace_path": "",
         "initial_files_to_read": [],
         "task_id_to_resume": "",
-        "mode_name": "wcgw",
+        "mode_name": "babash",
         "type": "first_call",
         "thread_id": "",
     }
@@ -194,13 +194,13 @@ async def test_handle_call_tool(setup_bash_state):
             "any_workspace_path": 123,  # Invalid type
             "initial_files_to_read": [],
             "task_id_to_resume": "",
-            "mode_name": "wcgw",
+            "mode_name": "babash",
         }
         await handle_call_tool("Initialize", invalid_args)
 
     # Test tool exception handling
     with patch(
-        "wcgw.client.mcp_server.server.get_tool_output",
+        "babash.client.mcp_server.server.get_tool_output",
         side_effect=Exception("Test error"),
     ):
         result = await handle_call_tool(
@@ -224,7 +224,7 @@ async def test_handle_call_tool_image_response(setup_bash_state):
     mock_image.media_type = mock_media_type
 
     with patch(
-        "wcgw.client.mcp_server.server.get_tool_output",
+        "babash.client.mcp_server.server.get_tool_output",
         return_value=([mock_image], None),
     ):
         result = await handle_call_tool("ReadImage", {"file_path": "test.png"})
@@ -245,7 +245,7 @@ async def test_main(setup_bash_state):
 
         with patch("mcp.server.stdio.stdio_server", return_value=mock_context):
             # Mock server.run to prevent actual server start
-            with patch("wcgw.client.mcp_server.server.server.run") as mock_run:
+            with patch("babash.client.mcp_server.server.server.run") as mock_run:
                 await main()
 
                 # Verify CONFIG update
@@ -257,5 +257,5 @@ async def test_main(setup_bash_state):
                 mock_run.assert_called_once()
                 init_options = mock_run.call_args[0][2]
                 assert isinstance(init_options, InitializationOptions)
-                assert init_options.server_name == "wcgw"
+                assert init_options.server_name == "babash"
                 assert init_options.server_version == "1.0.0"

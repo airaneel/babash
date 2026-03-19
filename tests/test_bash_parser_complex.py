@@ -2,7 +2,7 @@
 Tests specifically for complex bash parsing scenarios.
 """
 
-from wcgw.client.bash_state.parser.bash_statement_parser import BashStatementParser
+from babash.client.bash_state.parser.bash_statement_parser import BashStatementParser
 
 
 def test_semicolon_lists():

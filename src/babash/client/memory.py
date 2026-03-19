@@ -9,7 +9,7 @@ from ..types_ import ContextSave
 
 def get_app_dir_xdg() -> str:
     xdg_data_dir = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-    return os.path.join(xdg_data_dir, "wcgw")
+    return os.path.join(xdg_data_dir, "babash")
 
 
 def format_memory(task_memory: ContextSave, relevant_files: str) -> str:

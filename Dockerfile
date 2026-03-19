@@ -49,4 +49,4 @@ COPY --from=uv --chown=app:app /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Specify the command to run on container start
-ENTRYPOINT ["wcgw_mcp"]
+ENTRYPOINT ["babash_mcp"]

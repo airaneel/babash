@@ -2,7 +2,7 @@ import os
 import tempfile
 from typing import Optional
 
-from wcgw.types_ import ReadFiles
+from babash.types_ import ReadFiles
 
 
 def test_readfiles_line_number_parsing():

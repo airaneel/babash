@@ -5,7 +5,7 @@ from importlib import metadata
 import typer
 from typer import Typer
 
-from wcgw.client.mcp_server import server
+from babash.client.mcp_server import server
 
 main = Typer()
 
@@ -27,8 +27,8 @@ def app(
 ) -> None:
     """Main entry point for the package."""
     if version:
-        version_ = metadata.version("wcgw")
-        print(f"wcgw version: {version_}")
+        version_ = metadata.version("babash")
+        print(f"babash version: {version_}")
         raise typer.Exit()
 
     if transport == "streamable-http":

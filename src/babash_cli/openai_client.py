@@ -23,11 +23,11 @@ from openai.types.chat import (
 from pydantic import BaseModel
 from typer import Typer
 
-from wcgw.client.bash_state.bash_state import BashState
-from wcgw.client.common import CostData, History, Models, discard_input
-from wcgw.client.memory import load_memory
-from wcgw.client.tool_prompts import TOOL_PROMPTS
-from wcgw.client.tools import (
+from babash.client.bash_state.bash_state import BashState
+from babash.client.common import CostData, History, Models, discard_input
+from babash.client.memory import load_memory
+from babash.client.tool_prompts import TOOL_PROMPTS
+from babash.client.tools import (
     Context,
     ImageData,
     default_enc,
@@ -68,7 +68,7 @@ def save_history(history: History, session_id: str) -> None:
     myid += "_" + session_id
     myid = myid + ".json"
 
-    mypath = Path(".wcgw") / myid
+    mypath = Path(".babash") / myid
     mypath.parent.mkdir(parents=True, exist_ok=True)
     with open(mypath, "w") as f:
         json.dump(history, f, indent=3)
@@ -127,7 +127,7 @@ def loop(
             )
         except OSError:
             if resume == "latest":
-                resume_path = sorted(Path(".wcgw").iterdir(), key=os.path.getmtime)[-1]
+                resume_path = sorted(Path(".babash").iterdir(), key=os.path.getmtime)[-1]
             else:
                 resume_path = Path(resume)
             if not resume_path.exists():
@@ -190,7 +190,7 @@ def loop(
             resume if (memory and resume) else "",
             24000,  # coding_max_tokens
             8000,   # noncoding_max_tokens
-            mode="wcgw",
+            mode="babash",
             thread_id="",
         )
 

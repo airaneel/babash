@@ -4,8 +4,8 @@ from typing import Dict, List, Tuple
 
 import pytest
 
-from wcgw.client.bash_state import BashState, FileWhitelistData
-from wcgw.client.tools import Context, read_file, read_files
+from babash.client.bash_state import BashState, FileWhitelistData
+from babash.client.tools import Context, read_file, read_files
 
 
 class MockConsole:

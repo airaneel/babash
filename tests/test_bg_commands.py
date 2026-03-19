@@ -7,15 +7,15 @@ from typing import Generator
 
 import pytest
 
-from wcgw.client.bash_state.bash_state import BashState
-from wcgw.client.tools import (
+from babash.client.bash_state.bash_state import BashState
+from babash.client.tools import (
     BashCommand,
     Context,
     Initialize,
     default_enc,
     get_tool_output,
 )
-from wcgw.types_ import (
+from babash.types_ import (
     Command,
     Console,
     SendSpecials,
@@ -66,7 +66,7 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(

@@ -7,7 +7,7 @@ from typing import Any, Optional
 def get_bash_state_dir_xdg() -> str:
     """Get the XDG directory for storing bash state."""
     xdg_data_dir = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-    bash_state_dir = os.path.join(xdg_data_dir, "wcgw", "bash_state")
+    bash_state_dir = os.path.join(xdg_data_dir, "babash", "bash_state")
     os.makedirs(bash_state_dir, exist_ok=True)
     return bash_state_dir
 

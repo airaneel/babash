@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 
 [[package]]
@@ -80,6 +80,103 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2a/cb/486f912d6171bc5748c311a2984a301f4e2d054833a1da78485866c71522/autoflake-2.3.1.tar.gz", hash = "sha256:c98b75dc5b0a86459c4f01a1d32ac7eb4338ec4317a4469515ff1e687ecd909e", size = 27642, upload-time = "2024-03-13T03:41:28.977Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/ee/3fd29bf416eb4f1c5579cf12bf393ae954099258abd7bde03c4f9716ef6b/autoflake-2.3.1-py3-none-any.whl", hash = "sha256:3ae7495db9084b7b32818b4140e6dc4fc280b712fb414f5b8fe57b0a8e85a840", size = 32483, upload-time = "2024-03-13T03:41:26.969Z" },
+]
+
+[[package]]
+name = "babash"
+version = "5.6.2"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "fastapi" },
+    { name = "mcp" },
+    { name = "openai" },
+    { name = "petname" },
+    { name = "pexpect" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pygit2" },
+    { name = "pyte" },
+    { name = "python-dotenv" },
+    { name = "rich" },
+    { name = "semantic-version" },
+    { name = "syntax-checker" },
+    { name = "tokenizers" },
+    { name = "toml" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-bash" },
+    { name = "typer" },
+    { name = "uvicorn" },
+    { name = "wcmatch" },
+    { name = "websockets" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "autoflake" },
+    { name = "gunicorn" },
+    { name = "ipython" },
+    { name = "line-profiler" },
+    { name = "pyright" },
+]
+tests = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+types = [
+    { name = "line-profiler" },
+    { name = "mypy" },
+    { name = "types-pexpect" },
+    { name = "types-psutil" },
+    { name = "types-toml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.39.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "mcp", specifier = ">=1.23.0" },
+    { name = "openai", specifier = ">=1.46.0" },
+    { name = "petname", specifier = ">=2.6" },
+    { name = "pexpect", specifier = ">=4.9.0" },
+    { name = "psutil", specifier = ">=7.0.0" },
+    { name = "pydantic", specifier = ">=2.9.2" },
+    { name = "pygit2", specifier = ">=1.16.0" },
+    { name = "pyte", specifier = ">=0.8.2" },
+    { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "rich", specifier = ">=13.8.1" },
+    { name = "semantic-version", specifier = ">=2.10.0" },
+    { name = "syntax-checker", specifier = "==0.4.0" },
+    { name = "tokenizers", specifier = ">=0.21.0" },
+    { name = "toml", specifier = ">=0.10.2" },
+    { name = "tree-sitter", specifier = ">=0.24.0" },
+    { name = "tree-sitter-bash", specifier = ">=0.23.3" },
+    { name = "typer", specifier = ">=0.12.5" },
+    { name = "uvicorn", specifier = ">=0.31.0" },
+    { name = "wcmatch", specifier = ">=10.1" },
+    { name = "websockets", specifier = ">=13.1" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "autoflake" },
+    { name = "gunicorn", specifier = ">=23.0.0" },
+    { name = "ipython", specifier = ">=8.12.3" },
+    { name = "line-profiler", specifier = ">=4.2.0" },
+    { name = "pyright", specifier = ">=1.1.407" },
+]
+tests = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.3" },
+    { name = "pytest-cov", specifier = ">=4.1.0" },
+]
+types = [
+    { name = "line-profiler", specifier = ">=4.2.0" },
+    { name = "mypy", specifier = ">=1.11.2" },
+    { name = "types-pexpect", specifier = ">=4.9.0.20241208" },
+    { name = "types-psutil", specifier = ">=7.0.0.20250218" },
+    { name = "types-toml", specifier = ">=0.10.8.20240310" },
 ]
 
 [[package]]
@@ -1934,103 +2031,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3d/d8/2083a1daa7439a66f3a48589a57d576aa117726762618f6bb09fe3798796/uvicorn-0.40.0-py3-none-any.whl", hash = "sha256:c6c8f55bc8bf13eb6fa9ff87ad62308bbbc33d0b67f84293151efe87e0d5f2ee", size = 68502, upload-time = "2025-12-21T14:16:21.041Z" },
-]
-
-[[package]]
-name = "wcgw"
-version = "5.6.2"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "fastapi" },
-    { name = "mcp" },
-    { name = "openai" },
-    { name = "petname" },
-    { name = "pexpect" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "pygit2" },
-    { name = "pyte" },
-    { name = "python-dotenv" },
-    { name = "rich" },
-    { name = "semantic-version" },
-    { name = "syntax-checker" },
-    { name = "tokenizers" },
-    { name = "toml" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-bash" },
-    { name = "typer" },
-    { name = "uvicorn" },
-    { name = "wcmatch" },
-    { name = "websockets" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "autoflake" },
-    { name = "gunicorn" },
-    { name = "ipython" },
-    { name = "line-profiler" },
-    { name = "pyright" },
-]
-tests = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-]
-types = [
-    { name = "line-profiler" },
-    { name = "mypy" },
-    { name = "types-pexpect" },
-    { name = "types-psutil" },
-    { name = "types-toml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.39.0" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "mcp", specifier = ">=1.23.0" },
-    { name = "openai", specifier = ">=1.46.0" },
-    { name = "petname", specifier = ">=2.6" },
-    { name = "pexpect", specifier = ">=4.9.0" },
-    { name = "psutil", specifier = ">=7.0.0" },
-    { name = "pydantic", specifier = ">=2.9.2" },
-    { name = "pygit2", specifier = ">=1.16.0" },
-    { name = "pyte", specifier = ">=0.8.2" },
-    { name = "python-dotenv", specifier = ">=1.0.1" },
-    { name = "rich", specifier = ">=13.8.1" },
-    { name = "semantic-version", specifier = ">=2.10.0" },
-    { name = "syntax-checker", specifier = "==0.4.0" },
-    { name = "tokenizers", specifier = ">=0.21.0" },
-    { name = "toml", specifier = ">=0.10.2" },
-    { name = "tree-sitter", specifier = ">=0.24.0" },
-    { name = "tree-sitter-bash", specifier = ">=0.23.3" },
-    { name = "typer", specifier = ">=0.12.5" },
-    { name = "uvicorn", specifier = ">=0.31.0" },
-    { name = "wcmatch", specifier = ">=10.1" },
-    { name = "websockets", specifier = ">=13.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "autoflake" },
-    { name = "gunicorn", specifier = ">=23.0.0" },
-    { name = "ipython", specifier = ">=8.12.3" },
-    { name = "line-profiler", specifier = ">=4.2.0" },
-    { name = "pyright", specifier = ">=1.1.407" },
-]
-tests = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.25.3" },
-    { name = "pytest-cov", specifier = ">=4.1.0" },
-]
-types = [
-    { name = "line-profiler", specifier = ">=4.2.0" },
-    { name = "mypy", specifier = ">=1.11.2" },
-    { name = "types-pexpect", specifier = ">=4.9.0.20241208" },
-    { name = "types-psutil", specifier = ">=7.0.0.20250218" },
-    { name = "types-toml", specifier = ">=0.10.8.20240310" },
 ]
 
 [[package]]

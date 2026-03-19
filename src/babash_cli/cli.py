@@ -4,8 +4,8 @@ from typing import Optional
 import typer
 from typer import Typer
 
-from wcgw_cli.anthropic_client import loop as claude_loop
-from wcgw_cli.openai_client import loop as openai_loop
+from babash_cli.anthropic_client import loop as claude_loop
+from babash_cli.openai_client import loop as openai_loop
 
 app = Typer(pretty_exceptions_show_locals=False)
 
@@ -19,8 +19,8 @@ def loop(
     version: bool = typer.Option(False, "--version", "-v"),
 ) -> tuple[str, float]:
     if version:
-        version_ = importlib.metadata.version("wcgw")
-        print(f"wcgw version: {version_}")
+        version_ = importlib.metadata.version("babash")
+        print(f"babash version: {version_}")
         exit()
     if claude:
         return claude_loop(

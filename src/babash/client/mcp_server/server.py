@@ -9,8 +9,8 @@ from typing import Any
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 
-from wcgw.client.modes import KTS
-from wcgw.client.tool_prompts import TOOL_PROMPTS
+from babash.client.modes import KTS
+from babash.client.tool_prompts import TOOL_PROMPTS
 
 from ...types_ import (
     Initialize,
@@ -26,7 +26,7 @@ from ..tools import (
 
 # Log only time stamp
 logging.basicConfig(level=logging.INFO, format="%(asctime)s: %(message)s")
-logger = logging.getLogger("wcgw")
+logger = logging.getLogger("babash")
 
 
 class Console:
@@ -75,8 +75,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
         None,
         _shell_path or None,
     ) as bash_state:
-        version = str(metadata.version("wcgw"))
-        console.log("wcgw version: " + version)
+        version = str(metadata.version("babash"))
+        console.log("babash version: " + version)
         state = AppState(
             bash_state=bash_state,
             custom_instructions=custom_instructions,
@@ -89,7 +89,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
             _app_state = None
 
 
-mcp = FastMCP("wcgw", lifespan=app_lifespan)
+mcp = FastMCP("babash", lifespan=app_lifespan)
 
 # Use the underlying low-level server for handlers with custom schemas
 _server = mcp._mcp_server

@@ -8,7 +8,7 @@ from openai.types.chat import (
 )
 from tokenizers import Tokenizer  # type: ignore[import-untyped]
 
-from wcgw.client.common import CostData, History
+from babash.client.common import CostData, History
 
 
 def get_input_cost(

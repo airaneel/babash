@@ -4,17 +4,17 @@ from typing import Generator
 
 import pytest
 
-from wcgw.client.bash_state.bash_state import BashState
-from wcgw.client.file_ops.diff_edit import SearchReplaceMatchError
-from wcgw.client.file_ops.search_replace import SearchReplaceSyntaxError
-from wcgw.client.tools import (
+from babash.client.bash_state.bash_state import BashState
+from babash.client.file_ops.diff_edit import SearchReplaceMatchError
+from babash.client.file_ops.search_replace import SearchReplaceSyntaxError
+from babash.client.tools import (
     Context,
     FileWriteOrEdit,
     Initialize,
     default_enc,
     get_tool_output,
 )
-from wcgw.types_ import Console
+from babash.types_ import Console
 
 
 class TestConsole(Console):
@@ -66,7 +66,7 @@ def test_file_edit(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         type="first_call",
     )
     get_tool_output(
@@ -477,7 +477,7 @@ def test_context_based_matching(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         type="first_call",
     )
     get_tool_output(
@@ -558,7 +558,7 @@ def test_unordered(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         type="first_call",
     )
     get_tool_output(

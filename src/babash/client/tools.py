@@ -197,7 +197,7 @@ def initialize(
             )
             loaded_thread_id = snapshot.thread_id or context.bash_state.current_thread_id
 
-            if mode == "wcgw":
+            if mode == "babash":
                 context.bash_state.load_state(
                     snapshot.bash_command_mode,
                     snapshot.file_edit_mode,
@@ -276,9 +276,9 @@ def initialize(
     except Exception:
         pass
 
-    # Check for global alignment doc in ~/.wcgw: prefer CLAUDE.md, else AGENTS.md
+    # Check for global alignment doc in ~/.babash: prefer CLAUDE.md, else AGENTS.md
     try:
-        global_dir = os.path.join(expanduser("~"), ".wcgw")
+        global_dir = os.path.join(expanduser("~"), ".babash")
         for fname in ("CLAUDE.md", "AGENTS.md"):
             global_alignment_file_path = os.path.join(global_dir, fname)
             if os.path.exists(global_alignment_file_path):
@@ -313,7 +313,7 @@ def initialize(
     uname_machine = os.uname().machine
 
     output = f"""
-Use thread_id={context.bash_state.current_thread_id} for all wcgw tool calls which take that.
+Use thread_id={context.bash_state.current_thread_id} for all babash tool calls which take that.
 ---
 {mode_prompt}
 
@@ -348,7 +348,7 @@ def is_mode_change(mode_config: ModesConfig, bash_state: BashState) -> bool:
     )
 
 
-def reset_wcgw(
+def reset_babash(
     context: Context,
     starting_directory: str,
     mode_name: Optional[Modes],
@@ -1041,7 +1041,7 @@ def get_tool_output(
 
             # For these specific operations, thread_id is required
             output = (
-                reset_wcgw(
+                reset_babash(
                     context,
                     workspace_path,
                     arg.mode_name
@@ -1340,7 +1340,7 @@ if __name__ == "__main__":
                     any_workspace_path="",
                     initial_files_to_read=[],
                     task_id_to_resume="",
-                    mode_name="wcgw",
+                    mode_name="babash",
                     thread_id="",
                 ),
                 default_enc,

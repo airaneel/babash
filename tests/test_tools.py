@@ -5,8 +5,8 @@ from typing import Generator
 
 import pytest
 
-from wcgw.client.bash_state.bash_state import BashState
-from wcgw.client.tools import (
+from babash.client.bash_state.bash_state import BashState
+from babash.client.tools import (
     BashCommand,
     Context,
     ContextSave,
@@ -17,7 +17,7 @@ from wcgw.client.tools import (
     get_tool_output,
     which_tool_name,
 )
-from wcgw.types_ import (
+from babash.types_ import (
     Command,
     Console,
     FileWriteOrEdit,
@@ -82,7 +82,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -153,7 +153,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[test_file],
         task_id_to_resume="test_task_123",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -210,7 +210,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
         any_workspace_path="",
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -228,7 +228,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=nonexistent_path,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -250,7 +250,7 @@ def test_initialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=file_as_workspace,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -271,7 +271,7 @@ def test_bash_command(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -366,7 +366,7 @@ def test_interaction_commands(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -469,7 +469,7 @@ def test_write_and_read_file(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -571,7 +571,7 @@ def test_context_save(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -612,7 +612,7 @@ def test_reinitialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -625,7 +625,7 @@ def test_reinitialize(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id=context.bash_state._current_thread_id,
     )
     outputs, _ = get_tool_output(
@@ -728,7 +728,7 @@ def _test_init(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -875,7 +875,7 @@ def test_read_image(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
@@ -953,7 +953,7 @@ def test_git_recent_files(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
 
@@ -1004,7 +1004,7 @@ def test_error_cases(context: Context, temp_dir: str) -> None:
         any_workspace_path=temp_dir,
         initial_files_to_read=[],
         task_id_to_resume="",
-        mode_name="wcgw",
+        mode_name="babash",
         thread_id="",
     )
     get_tool_output(
