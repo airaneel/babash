@@ -22,9 +22,6 @@ from typing import (
 )
 
 import rich
-from openai.types.chat import (
-    ChatCompletionMessageParam,
-)
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from syntax_checker import Output as SCOutput
 from syntax_checker import check_syntax as raw_check_syntax
@@ -1120,7 +1117,6 @@ def get_tool_output(
     return [output[0]], output[1]
 
 
-History = list[ChatCompletionMessageParam]
 
 default_enc = get_default_encoder()
 curr_cost = 0.0
