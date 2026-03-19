@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Any, Generator
 
 import pytest
 
@@ -9,15 +9,15 @@ from babash.client.tools import Context, read_file, read_files
 
 
 class MockConsole:
-    def print(self, msg: str, *args, **kwargs) -> None:
+    def print(self, msg: str, *args: Any, **kwargs: Any) -> None:
         pass
 
-    def log(self, msg: str, *args, **kwargs) -> None:
+    def log(self, msg: str, *args: Any, **kwargs: Any) -> None:
         pass
 
 
 @pytest.fixture
-def test_file():
+def test_file() -> Generator[str, None, None]:
     """Create a temporary file with 20 lines of content."""
     with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
         for i in range(1, 21):
@@ -26,12 +26,11 @@ def test_file():
 
     yield path
 
-    # Cleanup
     os.unlink(path)
 
 
 @pytest.fixture
-def context():
+def context() -> Context:
     """Create a context with BashState for testing."""
     with BashState(
         console=MockConsole(),
@@ -41,11 +40,14 @@ def context():
         write_if_empty_mode=None,
         mode=None,
         use_screen=False,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=None,
     ) as bash_state:
         return Context(bash_state=bash_state, console=MockConsole())
 
 
-def test_read_file_tracks_line_ranges(test_file, context):
+def test_read_file_tracks_line_ranges(test_file: str, context: Context) -> None:
     """Test that read_file correctly returns line ranges."""
     # Read lines 5-10
     _, _, _, path, line_range = read_file(
@@ -56,7 +58,7 @@ def test_read_file_tracks_line_ranges(test_file, context):
     assert line_range == (5, 10)
 
 
-def test_read_files_tracks_multiple_ranges(test_file, context):
+def test_read_files_tracks_multiple_ranges(test_file: str, context: Context) -> None:
     """Test that read_files correctly collects line ranges for multiple reads."""
     # Create a second test file
     with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
@@ -86,7 +88,7 @@ def test_read_files_tracks_multiple_ranges(test_file, context):
         os.unlink(second_file)
 
 
-def test_whitelist_data_tracking(test_file):
+def test_whitelist_data_tracking(test_file: str) -> None:
     """Test that FileWhitelistData correctly tracks line ranges."""
     # Create whitelist data with some initial ranges and a total of 20 lines
     whitelist_data = FileWhitelistData(
@@ -121,10 +123,10 @@ def test_whitelist_data_tracking(test_file):
     assert len(whitelist_data.get_unread_ranges()) == 0
 
 
-def test_bash_state_whitelist_for_overwrite(context, test_file):
+def test_bash_state_whitelist_for_overwrite(context: Context, test_file: str) -> None:
     """Test that BashState correctly tracks file whitelist data."""
     # Create a dictionary mapping the test file to a line range
-    file_paths_with_ranges: Dict[str, List[Tuple[int, int]]] = {test_file: [(1, 10)]}
+    file_paths_with_ranges: dict[str, list[tuple[int, int]]] = {test_file: [(1, 10)]}
 
     # Add to whitelist
     context.bash_state.add_to_whitelist_for_overwrite(file_paths_with_ranges)

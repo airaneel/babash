@@ -7,20 +7,20 @@ import pytest
 
 from babash.client.bash_state.bash_state import BashState
 from babash.client.tools import (
-    BashCommand,
     Context,
-    ContextSave,
-    Initialize,
-    ReadFiles,
-    ReadImage,
     default_enc,
     get_tool_output,
     which_tool_name,
 )
 from babash.types_ import (
+    BashCommand,
     Command,
     Console,
+    ContextSave,
     FileWriteOrEdit,
+    Initialize,
+    ReadFiles,
+    ReadImage,
     SendAscii,
     SendSpecials,
     SendText,
@@ -28,15 +28,15 @@ from babash.types_ import (
 )
 
 
-class TestConsole(Console):
-    def __init__(self):
-        self.logs = []
-        self.prints = []
+class TestConsole:
+    def __init__(self) -> None:
+        self.logs: list[str] = []
+        self.prints: list[str] = []
 
-    def log(self, msg: str) -> None:
+    def log(self, msg: str, *args: object, **kwargs: object) -> None:
         self.logs.append(msg)
 
-    def print(self, msg: str) -> None:
+    def print(self, msg: str, *args: object, **kwargs: object) -> None:
         self.prints.append(msg)
 
 
@@ -59,6 +59,9 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         write_if_empty_mode=None,
         mode=None,
         use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=None,
     )
     ctx = Context(
         bash_state=bash_state,
@@ -633,6 +636,7 @@ def test_reinitialize(context: Context, temp_dir: str) -> None:
     )
 
     assert len(outputs) == 1
+    assert isinstance(outputs[0], str)
     assert "Reset successful" in outputs[0]
     assert "mode change" not in outputs[0].lower()
 

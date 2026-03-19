@@ -13,7 +13,7 @@ from typing import (
 )
 from uuid import uuid4
 
-import pexpect  # type: ignore[import-untyped]
+import pexpect
 
 from ...types_ import (
     Console,

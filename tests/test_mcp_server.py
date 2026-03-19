@@ -28,7 +28,7 @@ from babash.client.mcp_server.server import (
 
 # Reset server.BASH_STATE before all tests
 @pytest.fixture(scope="function", autouse=True)
-def setup_bash_state():
+def setup_bash_state() -> None:
     """Setup BashState for each test"""
 
     # Update CONFIG immediately

@@ -109,7 +109,11 @@ def _resume_task(
     if not task_id:
         return "", "", None
     if not is_first_call:
-        return "Warning: task can only be resumed in a new conversation. No task loaded.", "", None
+        return (
+            "Warning: task can only be resumed in a new conversation. No task loaded.",
+            "",
+            None,
+        )
     try:
         project_root_path, task_mem, loaded_state = load_memory(
             task_id,
@@ -133,7 +137,9 @@ def _resolve_workspace(
     """Returns (repo_context, folder_to_start, read_files_)."""
     if is_first_call and not workspace_path:
         tmp_dir = get_tmpdir()
-        workspace_path = os.path.join(tmp_dir, "claude-playground-" + uuid.uuid4().hex[:4])
+        workspace_path = os.path.join(
+            tmp_dir, "claude-playground-" + uuid.uuid4().hex[:4]
+        )
 
     if not workspace_path:
         return "", None, read_files_
@@ -141,8 +147,16 @@ def _resolve_workspace(
     if not os.path.exists(workspace_path):
         if os.path.abspath(workspace_path):
             os.makedirs(workspace_path, exist_ok=True)
-            return f"\nInfo: Workspace path {workspace_path} did not exist. I've created it for you.\n", Path(workspace_path), read_files_
-        return f"\nInfo: Workspace path {workspace_path} does not exist.", None, read_files_
+            return (
+                f"\nInfo: Workspace path {workspace_path} did not exist. I've created it for you.\n",
+                Path(workspace_path),
+                read_files_,
+            )
+        return (
+            f"\nInfo: Workspace path {workspace_path} does not exist.",
+            None,
+            read_files_,
+        )
 
     if os.path.isfile(workspace_path):
         if not read_files_:
@@ -169,7 +183,10 @@ def _load_alignment_docs(folder_to_start: Optional[Path], console: Any) -> str:
         pass
 
     for base_dir, label in [
-        (os.path.join(expanduser("~"), ".babash"), "Important guidelines from the user"),
+        (
+            os.path.join(expanduser("~"), ".babash"),
+            "Important guidelines from the user",
+        ),
         (str(folder_to_start) if folder_to_start else None, None),
     ]:
         if not base_dir:
@@ -228,18 +245,41 @@ def initialize(
     if loaded_state is not None:
         try:
             snapshot = BashState.parse_state(loaded_state)
-            workspace_root = str(folder_to_start) if folder_to_start else snapshot.workspace_root
+            workspace_root = (
+                str(folder_to_start) if folder_to_start else snapshot.workspace_root
+            )
 
             if mode == "babash":
-                bcm, fem, wem, mn = snapshot.bash_command_mode, snapshot.file_edit_mode, snapshot.write_if_empty_mode, snapshot.mode
+                bcm, fem, wem, mn = (
+                    snapshot.bash_command_mode,
+                    snapshot.file_edit_mode,
+                    snapshot.write_if_empty_mode,
+                    snapshot.mode,
+                )
             else:
                 mi = modes_to_state(mode)
-                bcm, fem, wem, mn = mi.bash_command_mode, mi.file_edit_mode, mi.write_if_empty_mode, mi.mode_name
+                bcm, fem, wem, mn = (
+                    mi.bash_command_mode,
+                    mi.file_edit_mode,
+                    mi.write_if_empty_mode,
+                    mi.mode_name,
+                )
 
             cwd = str(folder_to_start) if folder_to_start else workspace_root
-            whitelist = {**snapshot.whitelist_for_overwrite, **context.bash_state.whitelist_for_overwrite}
-            context.bash_state.load_state(bcm, fem, wem, mn, whitelist, cwd, workspace_root,
-                                          snapshot.thread_id or context.bash_state.current_thread_id)
+            whitelist = {
+                **snapshot.whitelist_for_overwrite,
+                **context.bash_state.whitelist_for_overwrite,
+            }
+            context.bash_state.load_state(
+                bcm,
+                fem,
+                wem,
+                mn,
+                whitelist,
+                cwd,
+                workspace_root,
+                snapshot.thread_id or context.bash_state.current_thread_id,
+            )
         except ValueError:
             context.console.print(traceback.format_exc())
             context.console.print("Error: couldn't load bash state")
@@ -247,14 +287,25 @@ def initialize(
     else:
         mode_changed = is_mode_change(mode, context.bash_state)
         mode_impl = modes_to_state(mode)
-        new_thread_id = generate_thread_id() if type == "first_call" else context.bash_state.current_thread_id
+        new_thread_id = (
+            generate_thread_id()
+            if type == "first_call"
+            else context.bash_state.current_thread_id
+        )
         folder_str = str(folder_to_start) if folder_to_start else ""
         context.bash_state.load_state(
-            mode_impl.bash_command_mode, mode_impl.file_edit_mode, mode_impl.write_if_empty_mode,
-            mode_impl.mode_name, dict(context.bash_state.whitelist_for_overwrite),
-            folder_str, folder_str, new_thread_id,
+            mode_impl.bash_command_mode,
+            mode_impl.file_edit_mode,
+            mode_impl.write_if_empty_mode,
+            mode_impl.mode_name,
+            dict(context.bash_state.whitelist_for_overwrite),
+            folder_str,
+            folder_str,
+            new_thread_id,
         )
-        mode_prompt = get_mode_prompt(context) if (type == "first_call" or mode_changed) else ""
+        mode_prompt = (
+            get_mode_prompt(context) if (type == "first_call" or mode_changed) else ""
+        )
 
     # Read initial files
     initial_files_context = ""
@@ -262,7 +313,11 @@ def initialize(
     if read_files_:
         if folder_to_start:
             read_files_ = [
-                os.path.join(folder_to_start, f) if not os.path.isabs(expand_user(f)) else expand_user(f)
+                (
+                    os.path.join(folder_to_start, f)
+                    if not os.path.isabs(expand_user(f))
+                    else expand_user(f)
+                )
                 for f in read_files_
             ]
         initial_files, initial_paths_with_ranges, _ = read_files(
@@ -643,7 +698,8 @@ def write_file(
                 noncoding_max_tokens,
             )
             context.console.print(f"W: Syntax errors encountered: {syntax_errors}")
-            warnings.append(f"""
+            warnings.append(
+                f"""
 ---
 Warning: tree-sitter reported syntax errors
 Syntax errors:
@@ -651,7 +707,8 @@ Syntax errors:
 
 {context_for_errors}
 ---
-            """)
+            """
+            )
 
     except Exception:
         pass
@@ -910,8 +967,10 @@ def _merge_ranges(
 
 
 def _handle_initialize(
-    arg: Initialize, context: Context,
-    coding_max_tokens: Optional[int], noncoding_max_tokens: Optional[int],
+    arg: Initialize,
+    context: Context,
+    coding_max_tokens: Optional[int],
+    noncoding_max_tokens: Optional[int],
 ) -> tuple[tuple[str, float], Context, dict[str, list[tuple[int, int]]]]:
     """Dispatch Initialize by subtype."""
     if arg.type in ("user_asked_mode_change", "reset_shell"):
@@ -922,17 +981,25 @@ def _handle_initialize(
         )
         workspace_path = workspace_path if os.path.exists(workspace_path) else ""
         result = reset_babash(
-            context, workspace_path,
+            context,
+            workspace_path,
             arg.mode_name if is_mode_change(arg.mode, context.bash_state) else None,
-            arg.mode, arg.thread_id,
+            arg.mode,
+            arg.thread_id,
         )
         return (result, 0.0), context, {}
 
     init_type: Literal["user_asked_change_workspace", "first_call"] = arg.type  # type: ignore[assignment]
     output_, context, init_paths = initialize(
-        init_type, context, arg.any_workspace_path,
-        arg.initial_files_to_read or [], arg.task_id_to_resume,
-        coding_max_tokens, noncoding_max_tokens, arg.mode, arg.thread_id,
+        init_type,
+        context,
+        arg.any_workspace_path,
+        arg.initial_files_to_read or [],
+        arg.task_id_to_resume,
+        coding_max_tokens,
+        noncoding_max_tokens,
+        arg.mode,
+        arg.thread_id,
     )
     return (output_, 0.0), context, init_paths
 
@@ -984,25 +1051,35 @@ def get_tool_output(
     if isinstance(arg, BashCommand):
         context.console.print("Calling execute bash tool")
         output_str, cost = execute_bash(
-            context.bash_state, enc, arg, noncoding_max_tokens, arg.action_json.wait_for_seconds,
+            context.bash_state,
+            enc,
+            arg,
+            noncoding_max_tokens,
+            arg.action_json.wait_for_seconds,
         )
         output = output_str, cost
 
     elif isinstance(arg, WriteIfEmpty):
         context.console.print("Calling write file tool")
-        result, paths = write_file(arg, True, coding_max_tokens, noncoding_max_tokens, context)
+        result, paths = write_file(
+            arg, True, coding_max_tokens, noncoding_max_tokens, context
+        )
         output = result, 0.0
         _merge_ranges(file_paths_with_ranges, paths)
 
     elif isinstance(arg, FileEdit):
         context.console.print("Calling full file edit tool")
-        result, paths = do_diff_edit(arg, coding_max_tokens, noncoding_max_tokens, context)
+        result, paths = do_diff_edit(
+            arg, coding_max_tokens, noncoding_max_tokens, context
+        )
         output = result, 0.0
         _merge_ranges(file_paths_with_ranges, paths)
 
     elif isinstance(arg, FileWriteOrEdit):
         context.console.print("Calling file writing tool")
-        result, paths = file_writing(arg, coding_max_tokens, noncoding_max_tokens, context)
+        result, paths = file_writing(
+            arg, coding_max_tokens, noncoding_max_tokens, context
+        )
         output = result, 0.0
         _merge_ranges(file_paths_with_ranges, paths)
 
@@ -1013,8 +1090,12 @@ def get_tool_output(
     elif isinstance(arg, ReadFiles):
         context.console.print("Calling read file tool")
         result, paths, _ = read_files(
-            arg.file_paths, coding_max_tokens, noncoding_max_tokens, context,
-            arg.start_line_nums, arg.end_line_nums,
+            arg.file_paths,
+            coding_max_tokens,
+            noncoding_max_tokens,
+            context,
+            arg.start_line_nums,
+            arg.end_line_nums,
         )
         output = result, 0.0
         _merge_ranges(file_paths_with_ranges, paths)
@@ -1024,9 +1105,10 @@ def get_tool_output(
         output, context, init_paths = _handle_initialize(
             arg, context, coding_max_tokens, noncoding_max_tokens
         )
-        _merge_ranges(file_paths_with_ranges, {
-            p: r for p, r in init_paths.items() if os.path.exists(p)
-        })
+        _merge_ranges(
+            file_paths_with_ranges,
+            {p: r for p, r in init_paths.items() if os.path.exists(p)},
+        )
 
     elif isinstance(arg, ContextSave):
         context.console.print("Calling task memory tool")
@@ -1044,7 +1126,6 @@ def get_tool_output(
     else:
         context.console.print(f"Received {type(output[0])} from tool")
     return [output[0]], output[1]
-
 
 
 default_enc = get_default_encoder()

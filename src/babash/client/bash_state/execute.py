@@ -5,7 +5,7 @@ import threading
 import traceback
 from typing import TYPE_CHECKING, Optional
 
-import pexpect  # type: ignore[import-untyped]
+import pexpect
 
 from ...types_ import (
     BashCommand,

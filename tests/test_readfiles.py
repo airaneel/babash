@@ -5,7 +5,7 @@ from typing import Optional
 from babash.types_ import ReadFiles
 
 
-def test_readfiles_line_number_parsing():
+def test_readfiles_line_number_parsing() -> None:
     # Create a temporary file
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
         tmp.write("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n")

@@ -9,24 +9,23 @@ import pytest
 
 from babash.client.bash_state.bash_state import BashState
 from babash.client.tools import (
-    BashCommand,
     Context,
-    Initialize,
     default_enc,
     get_tool_output,
 )
 from babash.types_ import (
+    BashCommand,
     Command,
-    Console,
+    Initialize,
     SendSpecials,
     StatusCheck,
 )
 
 
-class TestConsole(Console):
-    def __init__(self):
-        self.logs = []
-        self.prints = []
+class TestConsole:
+    def __init__(self) -> None:
+        self.logs: list[str] = []
+        self.prints: list[str] = []
 
     def log(self, msg: str) -> None:
         self.logs.append(msg)
@@ -54,6 +53,9 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         write_if_empty_mode=None,
         mode=None,
         use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=None,
     )
     ctx = Context(
         bash_state=bash_state,
@@ -104,6 +106,7 @@ def test_bg_command_basic(context: Context, temp_dir: str) -> None:
 
     # Extract bg_command_id from output
     bg_id = None
+    assert isinstance(outputs[0], str)
     for line in outputs[0].split("\n"):
         if "bg_command_id" in line:
             bg_id = line.split("=")[1].strip()
@@ -131,6 +134,7 @@ def test_bg_command_status_check(context: Context, temp_dir: str) -> None:
 
     # Extract bg_command_id
     bg_id = None
+    assert isinstance(outputs[0], str)
     for line in outputs[0].split("\n"):
         if "bg_command_id" in line:
             bg_id = line.split("=")[1].strip()
@@ -193,6 +197,7 @@ def test_bg_command_interrupt(context: Context, temp_dir: str) -> None:
 
     # Extract bg_command_id
     bg_id = None
+    assert isinstance(outputs[0], str)
     for line in outputs[0].split("\n"):
         if "bg_command_id" in line:
             bg_id = line.split("=")[1].strip()
@@ -253,6 +258,7 @@ def test_multiple_bg_commands(context: Context, temp_dir: str) -> None:
     # Extract both bg_command_ids
     bg_ids = []
     for output in [outputs1[0], outputs2[0]]:
+        assert isinstance(output, str)
         for line in output.split("\n"):
             if "bg_command_id" in line:
                 bg_ids.append(line.split("=")[1].strip())

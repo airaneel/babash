@@ -5,7 +5,7 @@ Tests specifically for complex bash parsing scenarios.
 from babash.client.bash_state.parser.bash_statement_parser import BashStatementParser
 
 
-def test_semicolon_lists():
+def test_semicolon_lists() -> None:
     """Test parsing of semicolon-separated commands."""
     parser = BashStatementParser()
 
@@ -29,7 +29,7 @@ def test_semicolon_lists():
     assert statements[1].text.strip() == "echo b"
 
 
-def test_bash_command_with_semicolons_in_quotes():
+def test_bash_command_with_semicolons_in_quotes() -> None:
     """Test that semicolons inside quotes don't split statements."""
     parser = BashStatementParser()
 
@@ -46,7 +46,7 @@ def test_bash_command_with_semicolons_in_quotes():
     assert len(statements) == 2
 
 
-def test_complex_commands():
+def test_complex_commands() -> None:
     """Test complex command scenarios."""
     parser = BashStatementParser()
 
@@ -63,7 +63,7 @@ def test_complex_commands():
     assert len(statements) == 2
 
 
-def test_command_chaining():
+def test_command_chaining() -> None:
     """Test command chains are treated as a single statement."""
     parser = BashStatementParser()
 

@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from hashlib import md5
 from typing import Optional
 
-import pexpect  # type: ignore[import-untyped]
-import psutil  # type: ignore[import-untyped]
+import pexpect
+import psutil
 import pyte
 import pyte.modes as pyte_modes
 

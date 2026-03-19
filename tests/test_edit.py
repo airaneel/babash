@@ -9,18 +9,16 @@ from babash.client.file_ops.diff_edit import SearchReplaceMatchError
 from babash.client.file_ops.search_replace import SearchReplaceSyntaxError
 from babash.client.tools import (
     Context,
-    FileWriteOrEdit,
-    Initialize,
     default_enc,
     get_tool_output,
 )
-from babash.types_ import Console
+from babash.types_ import FileWriteOrEdit, Initialize
 
 
-class TestConsole(Console):
-    def __init__(self):
-        self.logs = []
-        self.prints = []
+class TestConsole:
+    def __init__(self) -> None:
+        self.logs: list[str] = []
+        self.prints: list[str] = []
 
     def log(self, msg: str) -> None:
         self.logs.append(msg)
@@ -48,6 +46,9 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         write_if_empty_mode=None,
         mode=None,
         use_screen=False,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=None,
     )
     ctx = Context(
         bash_state=bash_state,
@@ -336,13 +337,13 @@ def fix_indentation(
     return [adjust_indentation(line, diffs[0]) for line in replaced_lines]
 
 
-def test_empty_inputs():
+def test_empty_inputs() -> None:
     assert fix_indentation([], ["  foo"], ["    bar"]) == ["    bar"]
     assert fix_indentation(["  foo"], [], ["    bar"]) == ["    bar"]
     assert fix_indentation(["  foo"], ["  foo"], []) == []
 
 
-def test_no_non_empty_lines_in_matched_or_searched():
+def test_no_non_empty_lines_in_matched_or_searched() -> None:
     # All lines in matched_lines/searched_lines are blank or just spaces
     matched_lines = ["   ", "  "]
     searched_lines = ["   ", "\t "]
@@ -354,7 +355,7 @@ def test_no_non_empty_lines_in_matched_or_searched():
     )
 
 
-def test_same_indentation_no_change():
+def test_same_indentation_no_change() -> None:
     # The non-empty lines have the same indentation => diff=0 => no changes
     matched_lines = ["    foo", "    bar"]
     searched_lines = ["    baz", "    qux"]
@@ -365,7 +366,7 @@ def test_same_indentation_no_change():
     )
 
 
-def test_positive_indentation_difference():
+def test_positive_indentation_difference() -> None:
     # matched_lines have fewer spaces than searched_lines => diff > 0 => remove indentation from replaced_lines
     matched_lines = ["  foo", "  bar"]
     searched_lines = ["    foo", "    bar"]
@@ -375,7 +376,7 @@ def test_positive_indentation_difference():
     assert fix_indentation(matched_lines, searched_lines, replaced_lines) == expected
 
 
-def test_positive_indentation_not_enough_spaces():
+def test_positive_indentation_not_enough_spaces() -> None:
     # We want to remove 2 spaces, but replaced_lines do not have that many leading spaces
     matched_lines = ["foo", "bar"]
     searched_lines = ["    foo", "    bar"]
@@ -386,7 +387,7 @@ def test_positive_indentation_not_enough_spaces():
     )
 
 
-def test_negative_indentation_difference():
+def test_negative_indentation_difference() -> None:
     # matched_lines have more spaces than searched_lines => diff < 0 => add indentation to replaced_lines
     matched_lines = ["    foo", "    bar"]
     searched_lines = ["  foo", "  bar"]
@@ -397,7 +398,7 @@ def test_negative_indentation_difference():
     assert fix_indentation(matched_lines, searched_lines, replaced_lines) == expected
 
 
-def test_different_number_of_non_empty_lines():
+def test_different_number_of_non_empty_lines() -> None:
     # matched_indents and searched_indents have different lengths => return replaced_lines
     matched_lines = [
         "    foo",
@@ -411,7 +412,7 @@ def test_different_number_of_non_empty_lines():
     )
 
 
-def test_inconsistent_indentation_difference():
+def test_inconsistent_indentation_difference() -> None:
     # The diffs are not all the same => return replaced_lines
     matched_lines = ["    foo", "        bar"]
     searched_lines = ["  foo", "    bar"]
@@ -424,7 +425,7 @@ def test_inconsistent_indentation_difference():
     )
 
 
-def test_realistic_fix_indentation_scenario():
+def test_realistic_fix_indentation_scenario() -> None:
     matched_lines = [
         "  class Example:",
         "      def method(self):",
@@ -448,7 +449,7 @@ def test_realistic_fix_indentation_scenario():
     assert fix_indentation(matched_lines, searched_lines, replaced_lines) == expected
 
 
-def test_realistic_nonfix_indentation_scenario():
+def test_realistic_nonfix_indentation_scenario() -> None:
     matched_lines = [
         "  class Example:",
         "      def method(self):",
