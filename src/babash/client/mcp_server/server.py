@@ -24,17 +24,21 @@ from ..tools import (
     which_tool_name,
 )
 
-# Log only time stamp
-logging.basicConfig(level=logging.INFO, format="%(asctime)s: %(message)s")
+logging.basicConfig(
+    level=logging.DEBUG if os.getenv("BABASH_DEBUG") else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("babash")
 
 
 class Console:
+    """Console adapter mapping print/log to Python logging levels."""
+
     def print(self, msg: str, *args: Any, **kwargs: Any) -> None:
         logger.info(msg)
 
     def log(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        logger.info(msg)
+        logger.debug(msg)
 
 
 @dataclass
