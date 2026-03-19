@@ -1,273 +1,123 @@
-# Shell and Coding agent for Claude and other mcp clients
+# babash
 
-Empowering chat applications to code, build and run on your local machine.
+Shell and coding agent MCP server. Fork of [wcgw](https://github.com/rusiaaman/wcgw), modernized with FastMCP and decomposed architecture.
 
-wcgw is an MCP server with tightly integrated shell and code editing tools.
+## Features
 
-As of 2026 the reason you could use `wcgw` is that it provides fully interactive shell experience that you and the agent both can control (including sending key-strokes). 
-Combined with the wcgw vscode extension that attaches the agent's shell in your editor, you can get the best agentic shell experience that is out there.
-The file editing tricks and the general minimalism also helps agent be more productive.
+- **Interactive shell** — fully interactive terminal via pexpect/pyte, supporting arrow keys, Ctrl-C, background processes
+- **Smart file editing** — search/replace with fuzzy matching, indentation tolerance, syntax checking on writes
+- **File protections** — read-before-edit enforcement, hash-based change detection, token-aware truncation with temp file save
+- **Three modes** — `wcgw` (full access), `architect` (read-only), `code_writer` (restricted paths/commands)
+- **Task persistence** — save/resume context across chat sessions via ContextSave
+- **ML file ranking** — pre-trained model scores file importance for smart repo overviews
+- **Streamable HTTP** — supports both stdio and streamable-http transports
 
+## Setup
 
-[![Tests](https://github.com/rusiaaman/wcgw/actions/workflows/python-tests.yml/badge.svg?branch=main)](https://github.com/rusiaaman/wcgw/actions/workflows/python-tests.yml)
-[![Mypy strict](https://github.com/rusiaaman/wcgw/actions/workflows/python-types.yml/badge.svg?branch=main)](https://github.com/rusiaaman/wcgw/actions/workflows/python-types.yml)
-[![Build](https://github.com/rusiaaman/wcgw/actions/workflows/python-publish.yml/badge.svg)](https://github.com/rusiaaman/wcgw/actions/workflows/python-publish.yml)
-[![codecov](https://codecov.io/gh/rusiaaman/wcgw/graph/badge.svg)](https://codecov.io/gh/rusiaaman/wcgw)
+### Claude Desktop
 
-## Demo
-
-![Workflow Demo](static/workflow-demo.gif)
-
-## Updates
-
-- [6 Oct 2025] Model can now run multiple commands in background. ZSH is now a supported shell. Multiplexing improvements.
-
-- [27 Apr 2025] Removed support for GPTs over relay server. Only MCP server is supported in version >= 5.
-
-- [24 Mar 2025] Improved writing and editing experience for sonnet 3.7, CLAUDE.md gets loaded automatically.
-
-- [16 Feb 2025] You can now attach to the working terminal that the AI uses. See the "attach-to-terminal" section below.
-
-- [15 Jan 2025] Modes introduced: architect, code-writer, and all powerful wcgw mode.
-
-- [8 Jan 2025] Context saving tool for saving relevant file paths along with a description in a single file. Can be used as a task checkpoint or for knowledge transfer.
-
-- [29 Dec 2024] Syntax checking on file writing and edits is now stable. Made `initialize` tool call useful; sending smart repo structure to claude if any repo is referenced. Large file handling is also now improved.
-
-- [9 Dec 2024] [Vscode extension to paste context on Claude app](https://marketplace.visualstudio.com/items?itemName=AmanRusia.wcgw)
-
-## 🚀 Highlights
-
-- ⚡ **Create, Execute, Iterate**: Ask claude to keep running compiler checks till all errors are fixed, or ask it to keep checking for the status of a long running command till it's done.
-- ⚡ **Large file edit**: Supports large file incremental edits to avoid token limit issues. Smartly selects when to do small edits or large rewrite based on % of change needed.
-- ⚡ **Syntax checking on edits**: Reports feedback to the LLM if its edits have any syntax errors, so that it can redo it.
-- ⚡ **Interactive Command Handling**: Supports interactive commands using arrow keys, interrupt, and ansi escape sequences.
-- ⚡ **File protections**:
-  - The AI needs to read a file at least once before it's allowed to edit or rewrite it. This avoids accidental overwrites.
-  - Avoids context filling up while reading very large files. Files get chunked based on token length.
-  - On initialisation the provided workspace's directory structure is returned after selecting important files (based on .gitignore as well as a statistical approach)
-  - File edit based on search-replace tries to find correct search block if it has multiple matches based on previous search blocks. Fails otherwise (for correctness).
-  - File edit has spacing tolerant matching, with warning on issues like indentation mismatch. If there's no match, the closest match is returned to the AI to fix its mistakes.
-  - Using Aider-like search and replace, which has better performance than tool call based search and replace.
-- ⚡ **Shell optimizations**:
-  - Current working directory is always returned after any shell command to prevent AI from getting lost.
-  - Command polling exits after a quick timeout to avoid slow feedback. However, status checking has wait tolerance based on fresh output streaming from a command. Both of these approach combined provides a good shell interaction experience.
-  - Supports multiple concurrent background commands alongside the main interactive shell.
-- ⚡ **Saving repo context in a single file**: Task checkpointing using "ContextSave" tool saves detailed context in a single file. Tasks can later be resumed in a new chat asking "Resume `task id`". The saved file can be used to do other kinds of knowledge transfer, such as taking help from another AI.
-- ⚡ **Easily switch between various modes**:
-  - Ask it to run in 'architect' mode for planning. Inspired by adier's architect mode, work with Claude to come up with a plan first. Leads to better accuracy and prevents premature file editing.
-  - Ask it to run in 'code-writer' mode for code editing and project building. You can provide specific paths with wild card support to prevent other files getting edited.
-  - By default it runs in 'wcgw' mode that has no restrictions and full authorisation.
-  - More details in [Modes section](#modes)
-- ⚡ **Runs in multiplex terminal** Use [vscode extension](https://marketplace.visualstudio.com/items?itemName=AmanRusia.wcgw) or run `screen -x` to attach to the terminal that the AI runs commands on. See history or interrupt process or interact with the same terminal that AI uses.
-- ⚡ **Automatically load CLAUDE.md/AGENTS.md** Loads "CLAUDE.md" or "AGENTS.md" file in project root and sends as instructions during initialisation. Instructions in a global "~/.wcgw/CLAUDE.md" or "~/.wcgw/AGENTS.md" file are loaded and added along with project specific CLAUDE.md. The file name is case sensitive. CLAUDE.md is attached if it's present otherwise AGENTS.md is attached.
-
-## Claude setup (using mcp)
-
-### Mac and linux
-
-First install `uv` using homebrew `brew install uv`
-
-(**Important:** use homebrew to install uv. Otherwise make sure `uv` is present in a global location like /usr/bin/)
-
-Then create or update `claude_desktop_config.json` (~/Library/Application Support/Claude/claude_desktop_config.json) with following json.
+Install `uv`, then add to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "wcgw": {
+    "babash": {
       "command": "uvx",
-      "args": ["wcgw@latest"]
+      "args": ["--from", "git+https://github.com/airaneel/babash", "babash"]
     }
   }
 }
 ```
 
-Then restart claude app.
-
-**Optional: Force a specific shell**
-
-To use a specific shell (bash or zsh), add the `--shell` argument:
+To force a specific shell:
 
 ```json
 {
   "mcpServers": {
-    "wcgw": {
+    "babash": {
       "command": "uvx",
-      "args": ["wcgw@latest", "--shell", "/bin/bash"]
+      "args": ["--from", "git+https://github.com/airaneel/babash", "babash", "--shell", "/bin/zsh"]
     }
   }
 }
 ```
 
-_If there's an error in setting up_
+### Streamable HTTP (remote deployment)
 
-- If there's an error like "uv ENOENT", make sure `uv` is installed. Then run 'which uv' in the terminal, and use its output in place of "uv" in the configuration.
-- If there's still an issue, check that `uv tool run --python 3.12 wcgw` runs in your terminal. It should have no output and shouldn't exit.
-- Try removing ~/.cache/uv folder
-- Try using `uv` version `0.6.0` for which this tool was tested.
-- Debug the mcp server using `npx @modelcontextprotocol/inspector@0.1.7 uv tool run --python 3.12 wcgw`
-
-### Windows on wsl
-
-This mcp server works only on wsl on windows.
-
-To set it up, [install uv](https://docs.astral.sh/uv/getting-started/installation/)
-
-Then add or update the claude config file `%APPDATA%\Claude\claude_desktop_config.json` with the following
-
-```json
-{
-  "mcpServers": {
-    "wcgw": {
-      "command": "wsl.exe",
-      "args": ["uvx", "wcgw@latest"]
-    }
-  }
-}
-```
-When you encounter an error, execute the command wsl uv --python 3.12 wcgw in command prompt. If you get the `error /bin/bash: line 1: uv: command not found`, it means uv was not installed globally and you need to point to the correct path of uv.
-1. Find where uv is installed:
 ```bash
-whereis uv
-```
-Example output:
-```uv: /home/mywsl/.local/bin/uv```
-
-2. Test the full path works:
-```
-wsl /home/mywsl/.local/bin/uv tool run --python 3.12 wcgw
+babash_mcp --transport streamable-http
 ```
 
-3. Update the config with the full path:
-```
-{
-  "mcpServers": {
-    "wcgw": {
-      "command": "wsl.exe",
-      "args": ["/home/mywsl/.local/bin/uv", "tool", "run", "--python", "3.12", "wcgw"]
-    }
-  }
-}
-```
-Replace `/home/mywsl/.local/bin/uv` with your actual uv path from step 1.
+### Docker
 
-### Usage
-
-Wait for a few seconds. You should be able to see this icon if everything goes right.
-
-![mcp icon](https://github.com/rusiaaman/wcgw/blob/main/static/rocket-icon.png?raw=true)
-over here
-
-![mcp icon](https://github.com/rusiaaman/wcgw/blob/main/static/claude-ss.jpg?raw=true)
-
-Then ask claude to execute shell commands, read files, edit files, run your code, etc.
-
-#### Task checkpoint or knowledge transfer
-
-- You can do a task checkpoint or a knowledge transfer by attaching "KnowledgeTransfer" prompt using "Attach from MCP" button.
-- On running "KnowledgeTransfer" prompt, the "ContextSave" tool will be called saving the task description and all file content together in a single file. An id for the task will be generated.
-- You can in a new chat say "Resume '<task id>'", the AI should then call "Initialize" with the task id and load the context from there.
-- Or you can directly open the file generated and share it with another AI for help.
-
-#### Modes
-
-There are three built-in modes. You may ask Claude to run in one of the modes, like "Use 'architect' mode"
-| **Mode** | **Description** | **Allows** | **Denies** | **Invoke prompt** |
-|-----------------|-----------------------------------------------------------------------------|---------------------------------------------------------|----------------------------------------------|----------------------------------------------------------------------------------------------------|
-| **Architect** | Designed for you to work with Claude to investigate and understand your repo. | Read-only commands | FileEdit and Write tool | Run in mode='architect' |
-| **Code-writer** | For code writing and development | Specified path globs for editing or writing, specified commands | FileEdit for paths not matching specified glob, Write for paths not matching specified glob | Run in code writer mode, only 'tests/**' allowed, only uv command allowed |
-| **wcgw\*\* | Default mode with everything allowed | Everything | Nothing | No prompt, or "Run in wcgw mode" |
-
-Note: in code-writer mode either all commands are allowed or none are allowed for now. If you give a list of allowed commands, Claude is instructed to run only those commands, but no actual check happens. (WIP)
-
-#### Attach to the working terminal to investigate
-
-NEW: the [vscode extension](https://marketplace.visualstudio.com/items?itemName=AmanRusia.wcgw) now automatically attach the running terminal
-if workspace path matches.
-
-If you've `screen` command installed, wcgw runs on a screen instance automatically. If you've started wcgw mcp server, you can list the screen sessions:
-
-`screen -ls`
-
-And note down the wcgw screen name which will be something like `93358.wcgw.235521` where the last number is in the hour-minute-second format.
-
-You can then attach to the session using `screen -x 93358.wcgw.235521`
-
-You may interrupt any running command safely.
-
-You can interact with the terminal safely, for example for entering passwords, or entering some text. (Warning: If you run a new command, any new LLM command will interrupt it.)
-
-You shouldn't exit the session using `exit `or Ctrl-d, instead you should use `ctrl+a+d` to safely detach without destroying the screen session.
-
-Include the following in ~/.screenrc for better scrolling experience
-```
-defscrollback 10000
-termcapinfo xterm* ti@:te@
-```
-
-### [Optional] Vs code extension
-
-https://marketplace.visualstudio.com/items?itemName=AmanRusia.wcgw
-
-Commands:
-
-- Select a text and press `cmd+'` and then enter instructions. This will switch the app to Claude and paste a text containing your instructions, file path, workspace dir, and the selected text.
-
-## Examples
-
-![example](https://github.com/rusiaaman/wcgw/blob/main/static/example.jpg?raw=true)
-
-## Using mcp server over docker
-
-First build the docker image `docker build -t wcgw https://github.com/rusiaaman/wcgw.git`
-
-Then you can update `/Users/username/Library/Application Support/Claude/claude_desktop_config.json` to have
-
-```
-{
-  "mcpServers": {
-    "wcgw": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "--mount",
-        "type=bind,src=/Users/username/Desktop,dst=/workspace/Desktop",
-        "wcgw"
-      ]
-    }
-  }
-}
+```bash
+docker build -t babash https://github.com/airaneel/babash.git
+docker run -i --rm --mount type=bind,src=/your/workspace,dst=/workspace babash
 ```
 
 ## Tools
 
-The server provides the following MCP tools:
+| Tool | Description |
+|---|---|
+| `Initialize` | Set up workspace, mode, resume tasks |
+| `BashCommand` | Execute shell commands, check status, send keystrokes |
+| `ReadFiles` | Read files with optional line ranges (`file.py:10-20`) |
+| `ReadImage` | Read image files |
+| `FileWriteOrEdit` | Write new files or edit existing ones (auto-selects mode by % changed) |
+| `ContextSave` | Save task context + relevant files for later resumption |
 
-**Shell Operations:**
+## Modes
 
-- `Initialize`: Reset shell and set up workspace environment
-  - Parameters: `any_workspace_path` (string), `initial_files_to_read` (string[]), `mode_name` ("wcgw"|"architect"|"code_writer"), `task_id_to_resume` (string)
-- `BashCommand`: Execute shell commands with timeout control
-  - Parameters: `command` (string), `wait_for_seconds` (int, optional)
-  - Parameters: `send_text` (string) or `send_specials` (["Enter"|"Key-up"|...]) or `send_ascii` (int[]), `wait_for_seconds` (int, optional)
+| Mode | Shell | File Edit | File Write |
+|---|---|---|---|
+| `wcgw` (default) | Full access | All files | All files |
+| `architect` | Read-only | None | None |
+| `code_writer` | Configurable | Specified globs | Specified globs |
 
-**File Operations:**
+## Terminal attachment
 
-- `ReadFiles`: Read content from one or more files
-  - Parameters: `file_paths` (string[])
-- `WriteIfEmpty`: Create new files or write to empty files
-  - Parameters: `file_path` (string), `file_content` (string)
-- `FileEdit`: Edit existing files using search/replace blocks
-  - Parameters: `file_path` (string), `file_edit_using_search_replace_blocks` (string)
-- `ReadImage`: Read image files for display/processing
-  - Parameters: `file_path` (string)
+If `screen` is installed, babash runs in a screen session. Attach with:
 
-**Project Management:**
+```bash
+screen -ls          # find the session
+screen -x <id>      # attach (use Ctrl+A+D to detach)
+```
 
-- `ContextSave`: Save project context and files for Knowledge Transfer or saving task checkpoints to be resumed later
-  - Parameters: `id` (string), `project_root_path` (string), `description` (string), `relevant_file_globs` (string[])
+## Architecture
 
-All tools support absolute paths and include built-in protections against common errors. See the [MCP specification](https://modelcontextprotocol.io/) for detailed protocol information.
+```
+src/babash/
+├── __init__.py                     # Entry point
+├── types_.py                       # Pydantic models for all tool inputs
+└── client/
+    ├── mcp_server/
+    │   ├── __init__.py             # Typer CLI (stdio + streamable-http)
+    │   └── server.py              # FastMCP server with lifespan
+    ├── bash_state/
+    │   ├── bash_state.py          # Core BashState class
+    │   ├── shell_process.py       # pexpect/pyte, screen sessions
+    │   ├── execute.py             # Command execution engine
+    │   ├── file_whitelist.py      # Read-before-edit tracking
+    │   └── persistence.py         # State serialization to disk
+    ├── file_ops/
+    │   ├── search_replace.py      # Aider-style search/replace
+    │   ├── diff_edit.py           # Fuzzy matching engine
+    │   └── extensions.py          # Language detection, token limits
+    ├── repo_ops/                  # Git-aware repo analysis, ML ranking
+    ├── tools.py                   # Tool dispatch and file operations
+    ├── modes.py                   # Mode definitions and prompts
+    ├── tool_prompts.py            # MCP tool schemas and descriptions
+    └── encoder/                   # Lazy-loaded tokenizer
+```
+
+## Development
+
+```bash
+uv sync
+uv run mypy --strict src/babash    # type checking
+uv run pytest                       # tests
+```
+
+## Credits
+
+Fork of [rusiaaman/wcgw](https://github.com/rusiaaman/wcgw). Modernized with FastMCP, decomposed BashState, cleaned up types.
