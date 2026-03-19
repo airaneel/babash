@@ -25,18 +25,17 @@ def app(
         help="Transport: stdio or streamable-http",
     ),
 ) -> None:
-    """Main entry point for the package."""
+    """babash MCP server."""
     if version:
         version_ = metadata.version("babash")
         print(f"babash version: {version_}")
         raise typer.Exit()
 
+    server._shell_path = shell
     if transport == "streamable-http":
-        server._shell_path = shell
         server.mcp.run(transport="streamable-http")
     else:
         asyncio.run(server.main(shell))
 
 
-# Optionally expose other important items at package level
 __all__ = ["main", "server"]

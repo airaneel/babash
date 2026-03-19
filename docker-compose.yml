@@ -1,0 +1,15 @@
+services:
+  babash:
+    build: .
+    ports:
+      - "${BABASH_PORT:-8000}:8000"
+    environment:
+      - BABASH_SERVER_INSTRUCTIONS=${BABASH_SERVER_INSTRUCTIONS:-}
+      - BABASH_SHELL=${BABASH_SHELL:-/bin/bash}
+    entrypoint: ["babash_mcp", "--transport", "streamable-http"]
+    volumes:
+      - workspace:/workspace
+    restart: unless-stopped
+
+volumes:
+  workspace:

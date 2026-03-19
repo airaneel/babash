@@ -89,7 +89,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
             _app_state = None
 
 
-mcp = FastMCP("babash", lifespan=app_lifespan)
+mcp = FastMCP(
+    "babash",
+    lifespan=app_lifespan,
+    host=os.getenv("BABASH_HOST", "127.0.0.1"),
+    port=int(os.getenv("BABASH_PORT", "8000")),
+)
 
 # Use the underlying low-level server for handlers with custom schemas
 _server = mcp._mcp_server
