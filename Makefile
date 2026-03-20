@@ -12,7 +12,7 @@ build:
 login:
 	@echo $(DOCKER_TOKEN) | docker login -u $(DOCKER_USER) --password-stdin
 
-push: login
+push:
 	docker buildx build --platform $(PLATFORM) -t $(IMAGE):$(TAG) --push .
 
 all: push

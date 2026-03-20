@@ -112,7 +112,14 @@ class Initialize(BaseModel):
             ]
 
 
-class CommandBase(BaseModel):
+class CommandBase(PydanticBaseModel):
+    """Base for bash action types. Allows extra fields so LLM mistakes
+    (e.g. sending 'command' with type='status_check') are silently ignored
+    rather than causing validation errors."""
+
+    class Config:
+        extra = "ignore"
+
     wait_for_seconds: Optional[float] = None
     thread_id: str
 
