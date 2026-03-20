@@ -1,9 +1,9 @@
 import os
 import re
-from typing import Any, Literal, Optional, Protocol, Sequence, Union
+from typing import Annotated, Any, Literal, Optional, Protocol, Sequence, Union
 
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import Field, PrivateAttr, model_serializer, model_validator
+from pydantic import Discriminator, Field, PrivateAttr, Tag, model_serializer, model_validator
 
 
 def normalize_thread_id(thread_id: str) -> str:
@@ -187,8 +187,24 @@ class ActionJsonSchema(BaseModel):
     thread_id: str
 
 
+def _bash_action_discriminator(data: Any) -> str:
+    if isinstance(data, dict):
+        return str(data.get("type", "command"))
+    return str(getattr(data, "type", "command"))
+
+
+BashAction = Annotated[
+    Annotated[Command, Tag("command")]
+    | Annotated[StatusCheck, Tag("status_check")]
+    | Annotated[SendText, Tag("send_text")]
+    | Annotated[SendSpecials, Tag("send_specials")]
+    | Annotated[SendAscii, Tag("send_ascii")],
+    Discriminator(_bash_action_discriminator),
+]
+
+
 class BashCommand(BaseModel):
-    action_json: Command | StatusCheck | SendText | SendSpecials | SendAscii
+    action_json: BashAction
 
     @model_validator(mode="before")
     @classmethod
