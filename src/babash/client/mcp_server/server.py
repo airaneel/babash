@@ -22,12 +22,10 @@ from ...types_ import (
 from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
 from ..tools import (
     Context,
-    ImageData,
     _handle_context_save,
     _handle_initialize,
     default_enc,
     file_writing,
-    get_tool_output,
     initialize,
     read_files,
     read_image_from_shell,
