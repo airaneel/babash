@@ -39,8 +39,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("babash")
 
-CODING_MAX_TOKENS = int(os.getenv("BABASH_CODING_MAX_TOKENS", "24000"))
-NONCODING_MAX_TOKENS = int(os.getenv("BABASH_NONCODING_MAX_TOKENS", "8000"))
+CODING_MAX_TOKENS = int(os.getenv("BABASH_CODING_MAX_TOKENS", "32000"))
+NONCODING_MAX_TOKENS = int(os.getenv("BABASH_NONCODING_MAX_TOKENS", "16000"))
 
 
 class Console:
