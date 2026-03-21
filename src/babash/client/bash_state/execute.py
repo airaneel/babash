@@ -16,7 +16,6 @@ from ...types_ import (
     StatusCheck,
 )
 from ..encoder import EncoderDecoder
-from .parser.bash_statement_parser import BashStatementParser
 from .shell_process import (
     CONFIG,
     cleanup_orphaned_babash_screens,
@@ -149,18 +148,13 @@ def execute_bash(
 
 
 def assert_single_statement(command: str) -> None:
-    if "\n" in command:
-        try:
-            parser = BashStatementParser()
-            statements = parser.parse_string(command)
-        except Exception:
-            raise ValueError(
-                "Command should not contain newline character in middle. Run only one command at a time."
-            )
-        if len(statements) > 1:
-            raise ValueError(
-                "Error: Command contains multiple statements. Please run only one bash statement at a time."
-            )
+    # Allow multi-statement commands (cmd1; cmd2; cmd3) — bash handles them fine.
+    # Only reject literal newlines which can corrupt pexpect line-by-line sending.
+    if "\n" in command.strip():
+        raise ValueError(
+            "Command should not contain newline characters. "
+            "Use semicolons to chain commands: cmd1; cmd2; cmd3"
+        )
 
 
 def get_bg_running_commandsinfo(bash_state: "BashState") -> str:
