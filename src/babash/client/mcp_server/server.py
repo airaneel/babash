@@ -289,6 +289,17 @@ async def run_command(
     await ctx.info(f"$ {command}")
     await ctx.report_progress(0, 1, "executing...")
 
+    # Auto-clear pending state: if shell is stuck from a previous command,
+    # collect its output and reset before running the new command
+    if app.bash_state.state == "pending" and not is_background:
+        await ctx.info("Previous command still running — collecting output and interrupting...")
+        prev_cmd = BashCommand.model_validate({
+            "type": "send_specials",
+            "send_specials": ["Ctrl-c"],
+            "thread_id": _tid(app),
+        })
+        execute_bash(app.bash_state, default_enc, prev_cmd, NONCODING_MAX_TOKENS, None)
+
     bash_cmd = BashCommand.model_validate({
         "type": "command",
         "command": command,
