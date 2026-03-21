@@ -172,35 +172,72 @@ class SendAscii(CommandBase):
     bg_command_id: str | None = None
 
 
-class ActionJsonSchema(BaseModel):
-    type: Literal[
-        "command", "status_check", "send_text", "send_specials", "send_ascii"
-    ] = Field(description="type of action.")
-    command: Optional[str] = Field(
-        default=None, description='Set only if type="command"'
-    )
-    status_check: Optional[Literal[True]] = Field(
-        default=None, description='Set only if type="status_check"'
-    )
-    send_text: Optional[str] = Field(
-        default=None, description='Set only if type="send_text"'
-    )
-    send_specials: Optional[Sequence[Specials]] = Field(
-        default=None, description='Set only if type="send_specials"'
-    )
-    send_ascii: Optional[Sequence[int]] = Field(
-        default=None, description='Set only if type="send_ascii"'
-    )
-    is_background: bool = Field(
-        default=False,
-        description='Set only if type="command" and running the command in background',
-    )
-    bg_command_id: str | None = Field(
-        default=None,
-        description='Set only if type!="command" and doing action on a running background command',
-    )
-    wait_for_seconds: Optional[float] = None
-    thread_id: str
+_BASH_COMMAND_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["type", "thread_id"],
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": ["command", "status_check", "send_text", "send_specials", "send_ascii"],
+            "description": "Action type. Determines which field to set.",
+        },
+        "thread_id": {"type": "string", "description": "Thread ID from Initialize."},
+        "wait_for_seconds": {"type": "number", "description": "Optional timeout."},
+    },
+    "oneOf": [
+        {
+            "title": "Run a shell command",
+            "properties": {
+                "type": {"const": "command"},
+                "command": {"type": "string", "description": "Shell command to execute."},
+                "is_background": {"type": "boolean", "default": False, "description": "Run in background."},
+            },
+            "required": ["command"],
+        },
+        {
+            "title": "Check status of a running command",
+            "properties": {
+                "type": {"const": "status_check"},
+                "bg_command_id": {"type": "string", "description": "Background command ID to check."},
+            },
+        },
+        {
+            "title": "Send text input to a running program",
+            "properties": {
+                "type": {"const": "send_text"},
+                "send_text": {"type": "string", "description": "Text to send to stdin."},
+                "bg_command_id": {"type": "string", "description": "Background command ID."},
+            },
+            "required": ["send_text"],
+        },
+        {
+            "title": "Send special keys",
+            "properties": {
+                "type": {"const": "send_specials"},
+                "send_specials": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]},
+                    "description": "Special keys to send.",
+                },
+                "bg_command_id": {"type": "string", "description": "Background command ID."},
+            },
+            "required": ["send_specials"],
+        },
+        {
+            "title": "Send raw ASCII codes",
+            "properties": {
+                "type": {"const": "send_ascii"},
+                "send_ascii": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "ASCII codes to send (e.g. [3] for Ctrl-C).",
+                },
+                "bg_command_id": {"type": "string", "description": "Background command ID."},
+            },
+            "required": ["send_ascii"],
+        },
+    ],
+}
 
 
 def _bash_action_discriminator(data: Any) -> str:
@@ -254,8 +291,8 @@ class BashCommand(BaseModel):
         return self.action_json.model_dump()
 
     @staticmethod
-    def model_json_schema(*args, **kwargs) -> dict[str, Any]:  # type: ignore
-        return ActionJsonSchema.model_json_schema(*args, **kwargs)
+    def model_json_schema(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return _BASH_COMMAND_SCHEMA
 
 
 class ReadImage(BaseModel):
