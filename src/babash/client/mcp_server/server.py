@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, Literal
 
-from mcp.server.fastmcp import Context as McpContext
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context as McpContext, FastMCP
+from mcp.server.lowlevel.server import request_ctx
 from mcp.types import ToolAnnotations
 
 from babash.client.modes import KTS
@@ -151,6 +151,57 @@ def _tid(app: AppState) -> str:
     return app.bash_state.current_thread_id
 
 
+# --- Resources ---
+
+def _get_app_from_request() -> AppState:
+    """Get AppState from request context (for resources which don't get ctx)."""
+    ctx = request_ctx.get()
+    state = ctx.lifespan_context
+    if not isinstance(state, AppState):
+        raise RuntimeError("Server not initialized")
+    return state
+
+
+@mcp.resource("babash://workspace/tree", description="Current workspace directory tree")
+def workspace_tree() -> str:
+    app = _get_app_from_request()
+    _ensure_init(app)
+    workspace = app.bash_state.workspace_root or app.bash_state.cwd
+    try:
+        from ..repo_ops.repo_context import get_repo_context
+        tree, _ = get_repo_context(workspace)
+        return f"Workspace: {workspace}\n\n{tree}"
+    except Exception:
+        return f"Workspace: {workspace}\n(unable to generate tree)"
+
+
+@mcp.resource("babash://workspace/env", description="Shell environment")
+def workspace_env() -> str:
+    app = _get_app_from_request()
+    _ensure_init(app)
+    bs = app.bash_state
+    return (
+        f"cwd: {bs.cwd}\n"
+        f"workspace_root: {bs.workspace_root}\n"
+        f"mode: {bs.mode}\n"
+        f"state: {bs.state}\n"
+        f"shell: running\n"
+    )
+
+
+@mcp.resource("babash://workspace/processes", description="Running background commands")
+def workspace_processes() -> str:
+    app = _get_app_from_request()
+    _ensure_init(app)
+    bg = app.bash_state.background_shells
+    if not bg:
+        return "No background commands running."
+    lines = []
+    for cid, state in bg.items():
+        lines.append(f"- {cid}: {state.last_command} (state={state.state})")
+    return "\n".join(lines)
+
+
 # --- Health ---
 
 @mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
@@ -216,7 +267,27 @@ async def run_command(
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
+    # Check for dangerous commands and elicit confirmation
+    dangerous_patterns = ["rm -rf", "rm -r /", "mkfs", "dd if=", "> /dev/", ":(){ :|:& };:"]
+    if any(p in command for p in dangerous_patterns):
+        try:
+            from pydantic import BaseModel as _BM
+
+            class Confirm(_BM):
+                proceed: bool = False
+
+            result = await ctx.elicit(
+                f"⚠️ Dangerous command detected: `{command}`\nProceed?",
+                Confirm,
+            )
+            from mcp.server.elicitation import AcceptedElicitation
+            if not isinstance(result, AcceptedElicitation) or not result.data.proceed:
+                return "Command cancelled by user."
+        except Exception:
+            pass  # Client doesn't support elicitation — proceed
+
     await ctx.info(f"$ {command}")
+    await ctx.report_progress(0, 1, "executing...")
 
     bash_cmd = BashCommand.model_validate({
         "type": "command",
@@ -235,6 +306,7 @@ async def run_command(
     if output.startswith(command.strip()):
         output = output[len(command.strip()):]
 
+    await ctx.report_progress(1, 1, "done")
     app.bash_state.save_state_to_disk()
     return output
 
