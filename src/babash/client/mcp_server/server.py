@@ -289,16 +289,19 @@ async def run_command(
     await ctx.info(f"$ {command}")
     await ctx.report_progress(0, 1, "executing...")
 
-    # Auto-clear pending state: if shell is stuck from a previous command,
-    # collect its output and reset before running the new command
+    # If shell is busy, tell the LLM instead of failing with a cryptic error
     if app.bash_state.state == "pending" and not is_background:
-        await ctx.info("Previous command still running — collecting output and interrupting...")
-        prev_cmd = BashCommand.model_validate({
-            "type": "send_specials",
-            "send_specials": ["Ctrl-c"],
-            "thread_id": _tid(app),
-        })
-        execute_bash(app.bash_state, default_enc, prev_cmd, NONCODING_MAX_TOKENS, None)
+        running = app.bash_state.last_command or "unknown"
+        pending_for = app.bash_state.get_pending_for()
+        return (
+            f"Cannot run command — previous command is still running.\n"
+            f"Running: {running}\n"
+            f"Running for: {pending_for}\n\n"
+            f"Options:\n"
+            f"1. Use `check_status` to see if it finished\n"
+            f"2. Use `send_keys` with Ctrl-c to interrupt it\n"
+            f"3. Run this command in background with is_background=true"
+        )
 
     bash_cmd = BashCommand.model_validate({
         "type": "command",
