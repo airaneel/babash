@@ -3,7 +3,14 @@ import re
 from typing import Annotated, Any, Literal, Optional, Protocol, Sequence, Union
 
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import Discriminator, Field, PrivateAttr, Tag, model_serializer, model_validator
+from pydantic import (
+    Discriminator,
+    Field,
+    PrivateAttr,
+    Tag,
+    model_serializer,
+    model_validator,
+)
 
 
 def normalize_thread_id(thread_id: str) -> str:
@@ -11,7 +18,9 @@ def normalize_thread_id(thread_id: str) -> str:
     return re.sub(r"[^\w]", "", thread_id)
 
 
-def _patch_singleton_all(value: Literal["all"] | list[str]) -> Literal["all"] | list[str]:
+def _patch_singleton_all(
+    value: Literal["all"] | list[str],
+) -> Literal["all"] | list[str]:
     """Patch ["all"] to "all" — handles frequent LLM output quirk."""
     if isinstance(value, list) and len(value) == 1 and value[0] == "all":
         return "all"
@@ -210,16 +219,34 @@ BashAction = Annotated[
 ]
 
 
+def _fix_llm_bash_mistakes(data: dict[str, Any]) -> dict[str, Any]:
+    """Fix common LLM mistakes: using 'command' field for non-command types."""
+    action_type = data.get("type", "command")
+    cmd = data.get("command")
+    if not cmd or action_type == "command":
+        return data
+    # LLM sent "command" field but type is send_text/send_specials/etc
+    field_map = {
+        "send_text": "send_text",
+        "send_specials": "send_specials",
+        "send_ascii": "send_ascii",
+    }
+    target = field_map.get(action_type)
+    if target and target not in data:
+        data = {**data, target: cmd}
+    return data
+
+
 class BashCommand(BaseModel):
     action_json: BashAction
 
     @model_validator(mode="before")
     @classmethod
     def combine(cls, data: Any) -> Any:
-        # If action_json is already provided, don't wrap it
         if isinstance(data, dict) and "action_json" in data:
             return data
-        # Otherwise wrap the data in action_json
+        if isinstance(data, dict):
+            data = _fix_llm_bash_mistakes(data)
         return {"action_json": data}
 
     @model_serializer(mode="plain")
