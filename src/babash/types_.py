@@ -66,10 +66,12 @@ class Initialize(BaseModel):
         "user_asked_change_workspace",
     ]
     any_workspace_path: str = Field(
-        description="Workspace to initialise in. Don't use ~ by default, instead use empty string"
+        default="",
+        description="Project directory to initialize in. Optional.",
     )
     initial_files_to_read: list[str] = Field(
-        description="Array of one or more files to read. Provide [] if no files mentioned."
+        default_factory=list,
+        description="Files to read on init. Optional.",
     )
     task_id_to_resume: str = Field(
         default="",
@@ -222,9 +224,11 @@ _BASH_COMMAND_SCHEMA: dict[str, Any] = {
             "properties": {
                 "type": {"const": "send_specials"},
                 "send_specials": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]},
-                    "description": "Special keys to send.",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string", "enum": ["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]}},
+                        {"type": "string"},
+                    ],
+                    "description": "Special keys to send. Array like [\"Ctrl-c\"] or single string.",
                 },
                 "bg_command_id": {"type": "string", "description": "Background command ID."},
             },
@@ -235,9 +239,11 @@ _BASH_COMMAND_SCHEMA: dict[str, Any] = {
             "properties": {
                 "type": {"const": "send_ascii"},
                 "send_ascii": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "ASCII codes to send (e.g. [3] for Ctrl-C).",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "integer"}},
+                        {"type": "string"},
+                    ],
+                    "description": "ASCII codes to send. Array like [3] or string.",
                 },
                 "bg_command_id": {"type": "string", "description": "Background command ID."},
             },
@@ -264,20 +270,34 @@ BashAction = Annotated[
 
 
 def _fix_llm_bash_mistakes(data: dict[str, Any]) -> dict[str, Any]:
-    """Fix common LLM mistakes: using 'command' field for non-command types."""
+    """Fix common LLM mistakes in BashCommand arguments."""
+    import json as _json
+
     action_type = data.get("type", "command")
+
+    # Fix stringified arrays: "[3]" -> [3], "[\"Ctrl-c\"]" -> ["Ctrl-c"]
+    for field in ("send_specials", "send_ascii"):
+        val = data.get(field)
+        if isinstance(val, str):
+            try:
+                parsed = _json.loads(val)
+                if isinstance(parsed, list):
+                    data = {**data, field: parsed}
+            except _json.JSONDecodeError:
+                pass
+
+    # Fix 'command' field used for non-command types
     cmd = data.get("command")
-    if not cmd or action_type == "command":
-        return data
-    # LLM sent "command" field but type is send_text/send_specials/etc
-    field_map = {
-        "send_text": "send_text",
-        "send_specials": "send_specials",
-        "send_ascii": "send_ascii",
-    }
-    target = field_map.get(action_type)
-    if target and target not in data:
-        data = {**data, target: cmd}
+    if cmd and action_type != "command":
+        field_map = {
+            "send_text": "send_text",
+            "send_specials": "send_specials",
+            "send_ascii": "send_ascii",
+        }
+        target = field_map.get(action_type)
+        if target and target not in data:
+            data = {**data, target: cmd}
+
     return data
 
 

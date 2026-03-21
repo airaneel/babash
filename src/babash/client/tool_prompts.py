@@ -20,11 +20,11 @@ TOOL_PROMPTS = [
         inputSchema=Initialize.model_json_schema(),
         name="Initialize",
         description="""Initialize the shell environment. Must be called first before any other tool.
-- Set `any_workspace_path` to the project directory. Use empty string if unknown.
-- Set `initial_files_to_read` to files the user mentioned, or [] if none.
-- Set `task_id_to_resume` to resume a previous task (optional).
-- Set `mode_name` to "babash" (full access, default), "architect" (read-only), or "code_writer" (restricted).
 - Set `type` to "first_call" for initial setup, "user_asked_mode_change" to switch modes, "reset_shell" if shell is broken, "user_asked_change_workspace" to change directory.
+- Optionally set `any_workspace_path` to the project directory.
+- Optionally set `initial_files_to_read` to files the user mentioned.
+- Optionally set `task_id_to_resume` to resume a previous task.
+- Optionally set `mode_name` to "architect" (read-only) or "code_writer" (restricted). Default is full access.
 """,
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
