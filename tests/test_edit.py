@@ -1,7 +1,7 @@
 import os
 import tempfile
 from typing import Generator
-
+import re
 import pytest
 
 from babash.client.bash_state.bash_state import BashState
@@ -289,7 +289,6 @@ def hello():
     )
 
 
-import re
 
 
 def fix_indentation(

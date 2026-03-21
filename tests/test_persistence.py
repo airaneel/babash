@@ -1,7 +1,6 @@
 """Tests for bash state persistence and utility functions."""
 
 import os
-import tempfile
 from typing import Any
 
 from babash.client.bash_state.persistence import (

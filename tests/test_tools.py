@@ -15,7 +15,6 @@ from babash.client.tools import (
 from babash.types_ import (
     BashCommand,
     Command,
-    Console,
     ContextSave,
     FileWriteOrEdit,
     Initialize,

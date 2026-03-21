@@ -13,7 +13,6 @@ from babash.client.tools import (
     expand_user,
     save_out_of_context,
     truncate_if_over,
-    default_enc,
 )
 from babash.types_ import _patch_singleton_all
 
