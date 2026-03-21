@@ -59,6 +59,25 @@ class AppState:
     custom_instructions: str | None
     console: Console
     initialized: bool = False
+    sessions: dict[str, BashState] | None = None
+
+    def get_sessions(self) -> dict[str, BashState]:
+        if self.sessions is None:
+            self.sessions = {}
+        return self.sessions
+
+    def get_shell(self, session: str | None) -> BashState:
+        """Get BashState for a named session, or main shell if None."""
+        if not session or session == "main":
+            return self.bash_state
+        sessions = self.get_sessions()
+        if session not in sessions:
+            raise ValueError(
+                f"Session '{session}' not found. "
+                f"Available: main, {', '.join(sessions.keys()) or '(none)'}. "
+                f"Create one with create_session."
+            )
+        return sessions[session]
 
 
 _shell_path: str = ""
@@ -89,11 +108,21 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     ) as bash_state:
         version = str(metadata.version("babash"))
         console.log("babash version: " + version)
-        yield AppState(
+        app = AppState(
             bash_state=bash_state,
             custom_instructions=custom_instructions,
             console=console,
         )
+        try:
+            yield app
+        finally:
+            # Graceful shutdown: clean up all named sessions
+            for name, shell in app.get_sessions().items():
+                try:
+                    shell.cleanup()
+                    console.log(f"Session '{name}' cleaned up")
+                except Exception as e:
+                    console.log(f"Error cleaning up session '{name}': {e}")
 
 
 mcp = FastMCP(
@@ -104,18 +133,21 @@ You have a persistent interactive terminal. Use RunCommand to execute shell comm
 The shell is stateful — cd, environment variables, and running processes persist between calls.
 
 Key tools:
-- RunCommand: execute a shell command (set is_background=true for long-running ones)
-- CheckStatus: check if a command is still running, get latest output
-- SendInput: send text to a running interactive program (e.g. password prompts)
-- SendKeys: send special keys like Ctrl-c, Enter, arrow keys
-- ReadFiles: read file contents (supports line ranges like file.py:10-20)
-- create_file: create a new file (fails if file exists)
+- run_command: execute a shell command. Use session= for parallel execution.
+- check_status: check if a command is still running
+- send_input: send text to a running interactive program
+- send_keys: send special keys like Ctrl-c, Enter, arrow keys
+- create_session: create a named shell session for parallel work
+- list_sessions: see all sessions and their status
+- read_files_tool: read file contents (supports line ranges like file.py:10-20)
+- create_file: create a new file
 - file_write_or_edit: edit existing files using search/replace blocks
-- Initialize: (optional) set workspace path, mode, or resume a task
 
-Do not use echo/cat to read or write files — use ReadFiles and FileWriteOrEdit.
-Only one foreground command runs at a time. Use CheckStatus before running a new one.
-Use is_background=true for commands that run for a long time (servers, builds).
+Sessions: you have a 'main' session by default. Create more with create_session
+for parallel work (e.g. server in one, tests in another). All shell tools accept
+a session= parameter.
+
+Do not use echo/cat to read or write files — use read_files_tool and file_write_or_edit.
 """,
     lifespan=app_lifespan,
     host=os.getenv("BABASH_HOST", "127.0.0.1"),
@@ -189,17 +221,95 @@ def workspace_env() -> str:
     )
 
 
-@mcp.resource("babash://workspace/processes", description="Running background commands")
+@mcp.resource("babash://workspace/processes", description="All sessions and running commands")
 def workspace_processes() -> str:
     app = _get_app_from_request()
     _ensure_init(app)
+    lines = [f"main: cwd={app.bash_state.cwd} state={app.bash_state.state} cmd={app.bash_state.last_command or '(idle)'}"]
+    for name, shell in app.get_sessions().items():
+        lines.append(f"{name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(idle)'}")
     bg = app.bash_state.background_shells
-    if not bg:
-        return "No background commands running."
-    lines = []
     for cid, state in bg.items():
-        lines.append(f"- {cid}: {state.last_command} (state={state.state})")
+        lines.append(f"bg/{cid}: {state.last_command} (state={state.state})")
     return "\n".join(lines)
+
+
+# --- Session Management ---
+
+@mcp.tool(
+    description="""Create a named shell session. Each session is an independent persistent shell.
+Use sessions to run multiple things in parallel (e.g. a server + tests + build).
+The 'main' session always exists.""",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+)
+async def create_session(
+    ctx: McpContext,  # type: ignore[type-arg]
+    name: str,
+    working_directory: str = "",
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+    sessions = app.get_sessions()
+
+    if name == "main":
+        return "Error: 'main' session already exists."
+    if name in sessions:
+        return f"Session '{name}' already exists. Use it with session='{name}' on run_command etc."
+
+    cwd = working_directory or app.bash_state.cwd
+    new_shell = BashState(
+        console=app.console,
+        working_dir=cwd,
+        bash_command_mode=None,
+        file_edit_mode=None,
+        write_if_empty_mode=None,
+        mode=None,
+        use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=_shell_path or None,
+    )
+    sessions[name] = new_shell
+    return f"Session '{name}' created (cwd: {cwd}). Use session='{name}' on run_command, check_status, send_input, send_keys."
+
+
+@mcp.tool(
+    description="List all shell sessions and their status.",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
+async def list_sessions(
+    ctx: McpContext,  # type: ignore[type-arg]
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    lines = [f"- main: cwd={app.bash_state.cwd} state={app.bash_state.state} (default)"]
+    for name, shell in app.get_sessions().items():
+        lines.append(f"- {name}: cwd={shell.cwd} state={shell.state} last_cmd={shell.last_command or '(none)'}")
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    description="Destroy a named session. Sends Ctrl-c to any running command, then cleans up the shell.",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+)
+async def destroy_session(
+    ctx: McpContext,  # type: ignore[type-arg]
+    name: str,
+) -> str:
+    app = _get_app(ctx)
+    if name == "main":
+        return "Error: cannot destroy the main session."
+    sessions = app.get_sessions()
+    if name not in sessions:
+        return f"Session '{name}' not found."
+    shell = sessions.pop(name)
+    try:
+        shell.sendintr()
+        shell.cleanup()
+    except Exception:
+        pass
+    return f"Session '{name}' destroyed."
 
 
 # --- Health ---
@@ -264,9 +374,11 @@ async def run_command(
     command: str,
     is_background: bool = False,
     wait_for_seconds: float | None = None,
+    session: str | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
+    shell = app.get_shell(session)
     # Check for dangerous commands and elicit confirmation
     dangerous_patterns = ["rm -rf", "rm -r /", "mkfs", "dd if=", "> /dev/", ":(){ :|:& };:"]
     if any(p in command for p in dangerous_patterns):
@@ -290,17 +402,18 @@ async def run_command(
     await ctx.report_progress(0, 1, "executing...")
 
     # If shell is busy, tell the LLM instead of failing with a cryptic error
-    if app.bash_state.state == "pending" and not is_background:
-        running = app.bash_state.last_command or "unknown"
-        pending_for = app.bash_state.get_pending_for()
+    if shell.state == "pending" and not is_background:
+        running = shell.last_command or "unknown"
+        pending_for = shell.get_pending_for()
+        sname = session or "main"
         return (
-            f"Cannot run command — previous command is still running.\n"
+            f"Cannot run command — session '{sname}' has a command still running.\n"
             f"Running: {running}\n"
             f"Running for: {pending_for}\n\n"
             f"Options:\n"
-            f"1. Use `check_status` to see if it finished\n"
-            f"2. Use `send_keys` with Ctrl-c to interrupt it\n"
-            f"3. Run this command in background with is_background=true"
+            f"1. Use `check_status(session='{sname}')` to see if it finished\n"
+            f"2. Use `send_keys(keys='Ctrl-c', session='{sname}')` to interrupt it\n"
+            f"3. Run this command in a different session or with is_background=true"
         )
 
     bash_cmd = BashCommand.model_validate({
@@ -308,11 +421,11 @@ async def run_command(
         "command": command,
         "is_background": is_background,
         "wait_for_seconds": wait_for_seconds,
-        "thread_id": _tid(app),
+        "thread_id": shell.current_thread_id,
     })
 
     output, _ = execute_bash(
-        app.bash_state, default_enc, bash_cmd,
+        shell, default_enc, bash_cmd,
         NONCODING_MAX_TOKENS, wait_for_seconds,
     )
 
@@ -321,7 +434,7 @@ async def run_command(
         output = output[len(command.strip()):]
 
     await ctx.report_progress(1, 1, "done")
-    app.bash_state.save_state_to_disk()
+    shell.save_state_to_disk()
     return output
 
 
@@ -332,21 +445,23 @@ async def run_command(
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
     bg_command_id: str | None = None,
+    session: str | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
+    shell = app.get_shell(session)
 
     bash_cmd = BashCommand.model_validate({
         "type": "status_check",
         "status_check": True,
         "bg_command_id": bg_command_id,
-        "thread_id": _tid(app),
+        "thread_id": shell.current_thread_id,
     })
 
     output, _ = execute_bash(
-        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
     )
-    app.bash_state.save_state_to_disk()
+    shell.save_state_to_disk()
     return output
 
 
@@ -358,21 +473,23 @@ async def send_input(
     ctx: McpContext,  # type: ignore[type-arg]
     text: str,
     bg_command_id: str | None = None,
+    session: str | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
+    shell = app.get_shell(session)
 
     bash_cmd = BashCommand.model_validate({
         "type": "send_text",
         "send_text": text,
         "bg_command_id": bg_command_id,
-        "thread_id": _tid(app),
+        "thread_id": shell.current_thread_id,
     })
 
     output, _ = execute_bash(
-        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
     )
-    app.bash_state.save_state_to_disk()
+    shell.save_state_to_disk()
     return output
 
 
@@ -384,9 +501,11 @@ async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
     keys: list[str] | str = "Ctrl-c",
     bg_command_id: str | None = None,
+    session: str | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
+    shell = app.get_shell(session)
 
     keys_list = [keys] if isinstance(keys, str) else keys
 
@@ -394,13 +513,13 @@ async def send_keys(
         "type": "send_specials",
         "send_specials": keys_list,
         "bg_command_id": bg_command_id,
-        "thread_id": _tid(app),
+        "thread_id": shell.current_thread_id,
     })
 
     output, _ = execute_bash(
-        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
     )
-    app.bash_state.save_state_to_disk()
+    shell.save_state_to_disk()
     return output
 
 
