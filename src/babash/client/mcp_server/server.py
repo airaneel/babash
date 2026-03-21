@@ -127,27 +127,47 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
 
 mcp = FastMCP(
     "babash",
-    instructions="""babash is a shell and coding agent MCP server.
+    instructions="""babash is a shell and coding agent MCP server with multiple persistent terminals.
 
-You have a persistent interactive terminal. Use RunCommand to execute shell commands.
-The shell is stateful — cd, environment variables, and running processes persist between calls.
+# Shell commands
+- run_command(command): execute a command and get output.
+- check_status(): check if the last command is still running.
+- send_input(text): send text to a running interactive program (passwords, prompts).
+- send_keys(keys): send special keys — "Ctrl-c" to interrupt, "Enter" to confirm, arrow keys to navigate.
 
-Key tools:
-- run_command: execute a shell command. Use session= for parallel execution.
-- check_status: check if a command is still running
-- send_input: send text to a running interactive program
-- send_keys: send special keys like Ctrl-c, Enter, arrow keys
-- create_session: create a named shell session for parallel work
-- list_sessions: see all sessions and their status
-- read_files_tool: read file contents (supports line ranges like file.py:10-20)
-- create_file: create a new file
-- file_write_or_edit: edit existing files using search/replace blocks
+# Sessions (parallel shells)
+You start with a 'main' session. For parallel work, create named sessions:
+- create_session(name="server") → independent shell
+- run_command(command="npm start", session="server")
+- check_status(session="server")
+- send_keys(keys="Ctrl-c", session="server")
+- destroy_session(name="server") → clean up when done
 
-Sessions: you have a 'main' session by default. Create more with create_session
-for parallel work (e.g. server in one, tests in another). All shell tools accept
-a session= parameter.
+Use sessions when you need things running simultaneously:
+  session "server" → npm start (keeps running)
+  session "main"   → npm test (while server runs)
 
-Do not use echo/cat to read or write files — use read_files_tool and file_write_or_edit.
+Use list_sessions() to see all sessions with their status and last command.
+
+# Background commands (within a session)
+For fire-and-forget commands within one session:
+- run_command(command="long-build", is_background=true) → returns bg_command_id
+- check_status(bg_command_id="...") → check progress
+
+Key difference: sessions are persistent independent shells. Background commands are
+one-off processes within a session.
+
+# File operations
+- read_files_tool(file_paths): read files. Supports line ranges: file.py:10-20
+- create_file(file_path, content): create a new file (fails if exists)
+- file_write_or_edit(file_path, percentage_to_change, text_or_search_replace_blocks): edit existing files
+
+Do NOT use echo/cat/sed to read or write files — use the file tools instead.
+
+# Important
+- Each session runs one foreground command at a time.
+- If a command is still running, check_status or send_keys(Ctrl-c) before running another.
+- cd, env vars, and state persist within each session independently.
 """,
     lifespan=app_lifespan,
     host=os.getenv("BABASH_HOST", "127.0.0.1"),
