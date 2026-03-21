@@ -296,15 +296,17 @@ async def send_input(
 )
 async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
-    keys: list[Literal["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]],
+    keys: list[str] | str = "Ctrl-c",
     bg_command_id: str | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
 
+    keys_list = [keys] if isinstance(keys, str) else keys
+
     bash_cmd = BashCommand.model_validate({
         "type": "send_specials",
-        "send_specials": keys,
+        "send_specials": keys_list,
         "bg_command_id": bg_command_id,
         "thread_id": _tid(app),
     })
