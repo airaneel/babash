@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import Context as McpContext
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from babash.client.modes import KTS
 
@@ -17,6 +18,7 @@ from ...types_ import (
     FileWriteOrEdit,
     Initialize,
     ReadFiles,
+    WriteIfEmpty,
 )
 from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
 from ..tools import (
@@ -29,6 +31,7 @@ from ..tools import (
     read_files,
     read_image_from_shell,
 )
+from ..tools.write_ops import write_file
 
 logging.basicConfig(
     level=logging.DEBUG if os.getenv("BABASH_DEBUG") else logging.INFO,
@@ -106,7 +109,8 @@ Key tools:
 - SendInput: send text to a running interactive program (e.g. password prompts)
 - SendKeys: send special keys like Ctrl-c, Enter, arrow keys
 - ReadFiles: read file contents (supports line ranges like file.py:10-20)
-- FileWriteOrEdit: write or edit files using search/replace blocks
+- create_file: create a new file (fails if file exists)
+- file_write_or_edit: edit existing files using search/replace blocks
 - Initialize: (optional) set workspace path, mode, or resume a task
 
 Do not use echo/cat to read or write files — use ReadFiles and FileWriteOrEdit.
@@ -166,8 +170,11 @@ async def knowledge_transfer(ctx: McpContext) -> str:  # type: ignore[type-arg]
 
 # --- Tools ---
 
-@mcp.tool(description="""Initialize the shell environment. Optional — auto-initializes on first tool call.
-Set workspace path, execution mode, or resume a previous task.""")
+@mcp.tool(
+    description="""Initialize the shell environment. Optional — auto-initializes on first tool call.
+Set workspace path, execution mode, or resume a previous task.""",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
 async def babash_initialize(
     ctx: McpContext,  # type: ignore[type-arg]
     type: Literal["first_call", "user_asked_mode_change", "reset_shell", "user_asked_change_workspace"] = "first_call",
@@ -195,9 +202,12 @@ async def babash_initialize(
     return f"{result}{instructions}\nInitialize call done.\n"
 
 
-@mcp.tool(description="""Execute a shell command.
-Only one foreground command at a time — use CheckStatus before running another.
-Set is_background=true for long-running commands (servers, builds).""")
+@mcp.tool(
+    description="""Execute a shell command.
+Only one foreground command at a time — use check_status before running another.
+Set is_background=true for long-running commands (servers, builds).""",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+)
 async def run_command(
     ctx: McpContext,  # type: ignore[type-arg]
     command: str,
@@ -229,7 +239,10 @@ async def run_command(
     return output
 
 
-@mcp.tool(description="Check if a command is still running. Returns current output and status.")
+@mcp.tool(
+    description="Check if a command is still running. Returns current output and status.",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
     bg_command_id: str | None = None,
@@ -251,7 +264,10 @@ async def check_status(
     return output
 
 
-@mcp.tool(description="Send text input to a running interactive program (e.g. password prompt, REPL).")
+@mcp.tool(
+    description="Send text input to a running interactive program (e.g. password prompt, REPL).",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+)
 async def send_input(
     ctx: McpContext,  # type: ignore[type-arg]
     text: str,
@@ -274,7 +290,10 @@ async def send_input(
     return output
 
 
-@mcp.tool(description="Send special keys to a running program. Use Ctrl-c to interrupt, arrow keys to navigate, Enter to confirm.")
+@mcp.tool(
+    description="Send special keys to a running program. Use Ctrl-c to interrupt, arrow keys to navigate, Enter to confirm.",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+)
 async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
     keys: list[Literal["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]],
@@ -297,8 +316,11 @@ async def send_keys(
     return output
 
 
-@mcp.tool(description="""Read content of one or more files.
-Provide absolute paths (~ allowed). Supports line ranges: file.py:10-20""")
+@mcp.tool(
+    description="""Read content of one or more files.
+Provide absolute paths (~ allowed). Supports line ranges: file.py:10-20""",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
 async def read_files_tool(
     ctx: McpContext,  # type: ignore[type-arg]
     file_paths: list[str],
@@ -318,7 +340,10 @@ async def read_files_tool(
     return result
 
 
-@mcp.tool(description="Read an image file and return its contents. Provide absolute path.")
+@mcp.tool(
+    description="Read an image file and return its contents. Provide absolute path.",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
 async def read_image(
     ctx: McpContext,  # type: ignore[type-arg]
     file_path: str,
@@ -330,15 +355,40 @@ async def read_image(
     return f"[Image: {image.media_type}, {len(image.data)} bytes base64]"
 
 
+@mcp.tool(
+    description="""Create a new file with the given content. Use absolute paths (~ allowed).
+Fails if the file already exists — use file_write_or_edit to modify existing files.""",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+)
+async def create_file(
+    ctx: McpContext,  # type: ignore[type-arg]
+    file_path: str,
+    content: str,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    wf = WriteIfEmpty(file_path=file_path, file_content=content)
+    result, paths = write_file(wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, _ctx(app))
+
+    if paths:
+        app.bash_state.add_to_whitelist_for_overwrite(paths)
+    app.bash_state.save_state_to_disk()
+    return result
+
+
 with open(os.path.join(os.path.dirname(__file__), "..", "diff-instructions.txt")) as _f:
     _diff_instructions = _f.read()
 
 
-@mcp.tool(description="""Write or edit a file.
+@mcp.tool(
+    description="""Edit an existing file using search/replace blocks.
 Set percentage_to_change: estimate what %% of existing lines will change (0-100).
 If > 50: provide full file content. If <= 50: provide search/replace blocks.
 Use absolute paths (~ allowed).
-""" + _diff_instructions)
+""" + _diff_instructions,
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
+)
 async def file_write_or_edit(
     ctx: McpContext,  # type: ignore[type-arg]
     file_path: str,
@@ -363,8 +413,11 @@ async def file_write_or_edit(
     return result
 
 
-@mcp.tool(description="""Save task context and relevant files for later resumption.
-Set id to a unique identifier. Set description with detailed task context in markdown.""")
+@mcp.tool(
+    description="""Save task context and relevant files for later resumption.
+Set id to a unique identifier. Set description with detailed task context in markdown.""",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
 async def context_save(
     ctx: McpContext,  # type: ignore[type-arg]
     id: str,
