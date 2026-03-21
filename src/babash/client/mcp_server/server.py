@@ -582,6 +582,14 @@ async def run_command(
     if errors:
         output += "\n\n--- Hints ---\n" + "\n".join(errors)
 
+    # Never return empty — show success/status for silent commands
+    if not output.strip() or output.strip().startswith("---\n\nstatus"):
+        state_info = output.strip() if output.strip() else ""
+        if shell.state == "repl":
+            output = f"(ok, no output)\n{state_info}".strip()
+        else:
+            output = f"(running, no output yet)\n{state_info}".strip()
+
     await ctx.report_progress(1, 1, "done")
     shell.save_state_to_disk()
     return output
