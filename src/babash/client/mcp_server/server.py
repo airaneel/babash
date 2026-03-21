@@ -8,6 +8,7 @@ from typing import Any
 
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel.server import request_ctx
 
 from babash.client.modes import KTS
 from babash.client.tool_prompts import TOOL_PROMPTS
@@ -51,16 +52,12 @@ class AppState:
     console: Console
 
 
-# Module-level state set by lifespan, accessed by handlers.
-# Needed because low-level _server handlers don't receive FastMCP context.
-_app_state: AppState | None = None
 _shell_path: str = ""
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
-    """Manage BashState lifecycle."""
-    global _app_state
+    """Manage BashState lifecycle — one per MCP session."""
     CONFIG.update(3, 55, 5)
 
     custom_instructions = os.getenv("BABASH_SERVER_INSTRUCTIONS")
@@ -83,16 +80,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     ) as bash_state:
         version = str(metadata.version("babash"))
         console.log("babash version: " + version)
-        state = AppState(
+        yield AppState(
             bash_state=bash_state,
             custom_instructions=custom_instructions,
             console=console,
         )
-        _app_state = state
-        try:
-            yield state
-        finally:
-            _app_state = None
 
 
 mcp = FastMCP(
@@ -106,9 +98,12 @@ _server = mcp._mcp_server
 
 
 def _get_app_state() -> AppState:
-    if _app_state is None:
+    """Get per-session AppState from MCP request context."""
+    ctx = request_ctx.get()
+    state = ctx.lifespan_context
+    if not isinstance(state, AppState):
         raise RuntimeError("Server not initialized — call Initialize first")
-    return _app_state
+    return state
 
 
 @mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
@@ -169,6 +164,10 @@ async def handle_call_tool(
 
     app = _get_app_state()
     bash_state = app.bash_state
+
+    # Inject session's thread_id so tools don't need it from the LLM
+    if "thread_id" not in arguments or not arguments["thread_id"]:
+        arguments["thread_id"] = bash_state.current_thread_id
 
     tool_type = which_tool_name(name)
     tool_call = parse_tool_by_name(name, arguments)

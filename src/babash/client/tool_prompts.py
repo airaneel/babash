@@ -22,9 +22,8 @@ TOOL_PROMPTS = [
         description="""Initialize the shell environment. Must be called first before any other tool.
 - Set `any_workspace_path` to the project directory. Use empty string if unknown.
 - Set `initial_files_to_read` to files the user mentioned, or [] if none.
-- Set `task_id_to_resume` to resume a previous task, or empty string for new tasks.
+- Set `task_id_to_resume` to resume a previous task (optional).
 - Set `mode_name` to "babash" (full access, default), "architect" (read-only), or "code_writer" (restricted).
-- Set `thread_id` to empty string on first_call. Use the returned thread_id for all subsequent tool calls.
 - Set `type` to "first_call" for initial setup, "user_asked_mode_change" to switch modes, "reset_shell" if shell is broken, "user_asked_change_workspace" to change directory.
 """,
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
@@ -39,7 +38,6 @@ IMPORTANT: Each `type` value has its own required field. Do NOT mix them.
 - type="send_text" → set `send_text` (string). Do NOT use `command` field.
 - type="send_specials" → set `send_specials` (array of keys like "Enter", "Ctrl-c", "Key-up").
 - type="send_ascii" → set `send_ascii` (array of integer ASCII codes).
-Always set `thread_id` to the value returned by Initialize.
 For background commands: set `is_background` to true with type="command".
 To interact with a background command: set `bg_command_id` on non-command types.
 Only one foreground command runs at a time. Check status before running a new one.
@@ -66,7 +64,6 @@ Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instea
         inputSchema=FileWriteOrEdit.model_json_schema(),
         name="FileWriteOrEdit",
         description="""Write or edit a file.
-- Set `thread_id` to the value returned by Initialize.
 - Set `percentage_to_change`: estimate what % of existing lines will change (0-100).
 - If percentage_to_change > 50: provide full file content in `text_or_search_replace_blocks`.
 - If percentage_to_change <= 50: provide search/replace blocks in `text_or_search_replace_blocks`.

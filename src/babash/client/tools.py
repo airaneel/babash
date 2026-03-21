@@ -328,7 +328,6 @@ def initialize(
     alignment_context = _load_alignment_docs(folder_to_start, context.console)
 
     output = f"""
-Use thread_id={context.bash_state.current_thread_id} for all babash tool calls which take that.
 ---
 {mode_prompt}
 

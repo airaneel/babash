@@ -137,10 +137,11 @@ class CommandBase(PydanticBaseModel):
         extra = "ignore"
 
     wait_for_seconds: Optional[float] = None
-    thread_id: str
+    thread_id: str = ""
 
     def model_post_init(self, __context: Any) -> None:
-        self.thread_id = normalize_thread_id(self.thread_id)
+        if self.thread_id:
+            self.thread_id = normalize_thread_id(self.thread_id)
         return super().model_post_init(__context)
 
 
@@ -181,14 +182,13 @@ class SendAscii(CommandBase):
 
 _BASH_COMMAND_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["type", "thread_id"],
+    "required": ["type"],
     "properties": {
         "type": {
             "type": "string",
             "enum": ["command", "status_check", "send_text", "send_specials", "send_ascii"],
             "description": "Action type. Determines which field to set.",
         },
-        "thread_id": {"type": "string", "description": "Thread ID from Initialize."},
         "wait_for_seconds": {"type": "number", "description": "Optional timeout."},
     },
     "oneOf": [
@@ -391,10 +391,11 @@ class FileWriteOrEdit(BaseModel):
     text_or_search_replace_blocks: str = Field(
         description="#3: content/edit blocks. Must be after #2 in the tool xml"
     )
-    thread_id: str = Field(description="#4: thread_id")
+    thread_id: str = Field(default="", description="Auto-injected by server.")
 
     def model_post_init(self, __context: Any) -> None:
-        self.thread_id = normalize_thread_id(self.thread_id)
+        if self.thread_id:
+            self.thread_id = normalize_thread_id(self.thread_id)
         return super().model_post_init(__context)
 
 
