@@ -27,11 +27,11 @@ if TYPE_CHECKING:
     from .bash_state import BashState
 
 
-WAITING_INPUT_MESSAGE = """A command is already running. NOTE: You can't run multiple shell commands in main shell, likely a previous program hasn't exited.
-1. Get its output using status check.
-2. Use `send_ascii` or `send_specials` to give inputs to the running program OR
-3. kill the previous program by sending ctrl+c first using `send_ascii` or `send_specials`
-4. Interrupt and run the process in background
+WAITING_INPUT_MESSAGE = """A command is already running. You can't run multiple commands in the main shell.
+1. Use `check_status` to get its output.
+2. Use `send_input` to give text input to the running program.
+3. Use `send_keys` with Ctrl-c to kill it.
+4. Or run the new command in background with is_background=true.
 """
 
 
@@ -205,7 +205,7 @@ def _execute_bash(
 
         if isinstance(command_data, Command):
             if bash_state.bash_command_mode.allowed_commands == "none":
-                return "Error: BashCommand not allowed in current mode", 0.0
+                return "Error: shell commands not allowed in current mode", 0.0
 
             bash_state.console.print(f"$ {command_data.command}")
 
