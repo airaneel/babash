@@ -21,6 +21,7 @@ from ..tools import (
     Context,
     default_enc,
     get_tool_output,
+    initialize,
     parse_tool_by_name,
     which_tool_name,
 )
@@ -50,6 +51,7 @@ class AppState:
     bash_state: BashState
     custom_instructions: str | None
     console: Console
+    initialized: bool = False
 
 
 _shell_path: str = ""
@@ -191,6 +193,25 @@ def _translate_tool(name: str, arguments: dict[str, Any], thread_id: str) -> tup
     return name, arguments
 
 
+def _auto_initialize(app: AppState) -> list[str]:
+    """Auto-initialize if not done yet. Returns init output as list."""
+    if app.initialized:
+        return []
+    app.initialized = True
+    init_result, _, _ = initialize(
+        "first_call",
+        Context(app.bash_state, app.console),
+        "",
+        [],
+        "",
+        CODING_MAX_TOKENS,
+        NONCODING_MAX_TOKENS,
+        "babash",
+        "",
+    )
+    return [init_result]
+
+
 @_server.call_tool()  # type: ignore
 async def handle_call_tool(
     name: str, arguments: dict[str, Any] | None
@@ -201,6 +222,12 @@ async def handle_call_tool(
     app = _get_app_state()
     bash_state = app.bash_state
     is_init = name == "Initialize"
+
+    # Auto-initialize on first non-Initialize tool call
+    if is_init:
+        app.initialized = True
+    else:
+        _auto_initialize(app)
 
     name, arguments = _translate_tool(name, arguments, bash_state.current_thread_id)
 
