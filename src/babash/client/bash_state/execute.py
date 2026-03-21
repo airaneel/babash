@@ -335,7 +335,8 @@ def _execute_bash(
                 saved.write(incremental_text.encode())
                 saved.close()
                 incremental_text = (
-                    f"(...truncated, full output saved to {saved.name})\n"
+                    f"(...OUTPUT TRUNCATED — too large. Full output saved to {saved.name}. "
+                    f"TIP: Use more precise commands (grep, head, tail, awk) to get specific data instead of dumping everything.)\n"
                     + enc.decoder(tokens[-(max_tokens - 1) :])
                 )
 
