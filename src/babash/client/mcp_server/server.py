@@ -233,18 +233,32 @@ def workspace_tree() -> str:
         return f"Workspace: {workspace}\n(unable to generate tree)"
 
 
-@mcp.resource("babash://workspace/env", description="Shell environment")
+@mcp.resource("babash://workspace/env", description="Shell environment and system info")
 def workspace_env() -> str:
+    import platform
+    import shutil
+
     app = _get_app_from_request()
     _ensure_init(app)
     bs = app.bash_state
-    return (
-        f"cwd: {bs.cwd}\n"
-        f"workspace_root: {bs.workspace_root}\n"
-        f"mode: {bs.mode}\n"
-        f"state: {bs.state}\n"
-        f"shell: running\n"
-    )
+
+    # System info
+    lines = [
+        f"system: {platform.system()} {platform.release()}",
+        f"machine: {platform.machine()}",
+        f"shell_cwd: {bs.cwd}",
+        f"workspace_root: {bs.workspace_root}",
+        f"mode: {bs.mode}",
+        f"state: {bs.state}",
+    ]
+
+    # Detect available tools
+    for tool in ["git", "docker", "python3", "node", "npm", "uv", "pip", "rg", "jq", "ssh", "curl"]:
+        path = shutil.which(tool)
+        if path:
+            lines.append(f"has_{tool}: {path}")
+
+    return "\n".join(lines)
 
 
 @mcp.resource("babash://workspace/processes", description="All sessions and running commands")
