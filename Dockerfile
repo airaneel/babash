@@ -1,45 +1,57 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+FROM nikolaik/python-nodejs:python3.12-nodejs22
 
-WORKDIR /app
-
-COPY pyproject.toml uv.lock README.md /app/
-
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev --no-editable
-
-COPY src /app/src
-
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
-
-FROM python:3.12-slim-bookworm
-
+# === System packages (only what nikolaik doesn't include) ===
+# nikolaik already has: git, curl, wget, make, gcc, g++, ca-certificates, gnupg, procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    screen curl \
     openssh-client sshpass \
-    net-tools iputils-ping dnsutils traceroute \
-    wget jq \
-    git \
-    vim-tiny nano \
-    zip unzip tar gzip \
-    procps htop \
+    iputils-ping dnsutils net-tools traceroute \
+    jq htop tmux screen less tree \
+    nano vim-tiny \
+    zip unzip tar \
+    fd-find ripgrep bat \
+    libffi-dev \
+    sqlite3 postgresql-client redis-tools \
+    rsync \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r app && useradd -r -g app app
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -sf /usr/bin/batcat /usr/local/bin/bat
+
+# yq
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" \
+    -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+
+# === Node.js global packages ===
+RUN npm install -g typescript tsx prettier
+
+# === Python utility packages (system pip) ===
+RUN pip install --no-cache-dir --break-system-packages \
+    httpie \
+    paramiko requests httpx \
+    psycopg2-binary redis \
+    pyyaml beautifulsoup4 lxml \
+    pandas openpyxl \
+    python-docx python-pptx \
+    Pillow \
+    black ruff ipython
+
+# === Babash MCP server ===
+COPY pyproject.toml uv.lock README.md /app/
+COPY src /app/src
+
+RUN pip install --no-cache-dir --break-system-packages /app
+
+# === Config ===
+RUN mkdir -p /root/.ssh \
+    && printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > /root/.ssh/config \
+    && chmod 700 /root/.ssh && chmod 600 /root/.ssh/config
+
+RUN git config --global user.name "babash" \
+    && git config --global user.email "babash@raidmen.ru"
+
+ENV HF_HOME=/root/.cache/huggingface
 
 WORKDIR /workspace
-
-COPY --from=build --chown=app:app /app/.venv /app/.venv
-
-ENV PATH="/app/.venv/bin:$PATH"
-
-RUN mkdir -p /home/app/.cache && chown -R app:app /home/app
-
-USER app
-
-ENV HF_HOME=/home/app/.cache/huggingface
 
 ENTRYPOINT ["babash_mcp"]
