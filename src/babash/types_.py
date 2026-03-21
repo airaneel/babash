@@ -71,10 +71,17 @@ class Initialize(BaseModel):
     initial_files_to_read: list[str] = Field(
         description="Array of one or more files to read. Provide [] if no files mentioned."
     )
-    task_id_to_resume: str
-    mode_name: Literal["babash", "architect", "code_writer"]
+    task_id_to_resume: str = Field(
+        default="",
+        description="Task ID to resume from a previous session. Leave empty for new tasks.",
+    )
+    mode_name: Literal["babash", "architect", "code_writer"] = Field(
+        default="babash",
+        description="Execution mode.",
+    )
     thread_id: str = Field(
-        description="Use the thread_id created in first_call, leave it as empty string if first_call"
+        default="",
+        description="Thread ID from a previous Initialize call. Leave empty on first_call.",
     )
     allowed_globs: Optional[Literal["all"] | list[str]] = Field(
         default=None,
@@ -393,7 +400,10 @@ class FileWriteOrEdit(BaseModel):
 
 class ContextSave(BaseModel):
     id: str
-    project_root_path: str
+    project_root_path: str = Field(
+        default="",
+        description="Project root directory. Leave empty if unknown.",
+    )
     description: str
     relevant_file_globs: list[str]
 

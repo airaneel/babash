@@ -10,7 +10,6 @@ from ..types_ import (
     ReadFiles,
     ReadImage,
 )
-from .schema_generator import remove_titles_from_schema
 
 with open(os.path.join(os.path.dirname(__file__), "diff-instructions.txt")) as f:
     diffinstructions = f.read()
@@ -18,7 +17,7 @@ with open(os.path.join(os.path.dirname(__file__), "diff-instructions.txt")) as f
 
 TOOL_PROMPTS = [
     Tool(
-        inputSchema=remove_titles_from_schema(Initialize.model_json_schema()),
+        inputSchema=Initialize.model_json_schema(),
         name="Initialize",
         description="""Initialize the shell environment. Must be called first before any other tool.
 - Set `any_workspace_path` to the project directory. Use empty string if unknown.
@@ -28,10 +27,10 @@ TOOL_PROMPTS = [
 - Set `thread_id` to empty string on first_call. Use the returned thread_id for all subsequent tool calls.
 - Set `type` to "first_call" for initial setup, "user_asked_mode_change" to switch modes, "reset_shell" if shell is broken, "user_asked_change_workspace" to change directory.
 """,
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
     Tool(
-        inputSchema=remove_titles_from_schema(BashCommand.model_json_schema()),
+        inputSchema=BashCommand.model_json_schema(),
         name="BashCommand",
         description="""Execute shell commands or interact with running processes.
 IMPORTANT: Each `type` value has its own required field. Do NOT mix them.
@@ -46,25 +45,25 @@ To interact with a background command: set `bg_command_id` on non-command types.
 Only one foreground command runs at a time. Check status before running a new one.
 Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
 """,
-        annotations=ToolAnnotations(destructiveHint=True, openWorldHint=True),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
     ),
     Tool(
-        inputSchema=remove_titles_from_schema(ReadFiles.model_json_schema()),
+        inputSchema=ReadFiles.model_json_schema(),
         name="ReadFiles",
         description="""Read content of one or more files.
 - Provide absolute paths only (~ allowed).
 - Supports line ranges: `/path/file.py:10-20` for lines 10-20, `:10-` from line 10, `:-20` first 20 lines.
 """,
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
     Tool(
-        inputSchema=remove_titles_from_schema(ReadImage.model_json_schema()),
+        inputSchema=ReadImage.model_json_schema(),
         name="ReadImage",
         description="Read an image file and return its contents. Provide absolute path.",
-        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
     Tool(
-        inputSchema=remove_titles_from_schema(FileWriteOrEdit.model_json_schema()),
+        inputSchema=FileWriteOrEdit.model_json_schema(),
         name="FileWriteOrEdit",
         description="""Write or edit a file.
 - Set `thread_id` to the value returned by Initialize.
@@ -79,7 +78,7 @@ Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instea
         ),
     ),
     Tool(
-        inputSchema=remove_titles_from_schema(ContextSave.model_json_schema()),
+        inputSchema=ContextSave.model_json_schema(),
         name="ContextSave",
         description="""Save task context and relevant files for later resumption.
 - Set `id` to a unique identifier (3 random words or user-provided).
@@ -87,6 +86,6 @@ Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instea
 - Set `description` with detailed task context in markdown.
 - Set `relevant_file_globs` to file paths or glob patterns to include.
 """,
-        annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
 ]
