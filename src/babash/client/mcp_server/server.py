@@ -532,6 +532,11 @@ async def run_command(
         except Exception:
             pass  # Client doesn't support elicitation — proceed
 
+    # Wrap multi-line commands in bash -c to avoid pexpect line splitting issues
+    if "\n" in command.strip():
+        import shlex
+        command = f"bash -c {shlex.quote(command)}"
+
     await ctx.info(f"$ {command}")
     await ctx.report_progress(0, 1, "executing...")
 
@@ -583,13 +588,14 @@ async def run_command(
 
 
 @mcp.tool(
-    description="Check if a command is still running. Returns current output and status.",
+    description="Check if a command is still running. Returns new output since last check. Set wait_for_seconds to wait longer for slow commands.",
     annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
     bg_command_id: str | None = None,
     session: str | None = None,
+    wait_for_seconds: float | None = None,
 ) -> str:
     app = _get_app(ctx)
     _ensure_init(app)
@@ -599,11 +605,12 @@ async def check_status(
         "type": "status_check",
         "status_check": True,
         "bg_command_id": bg_command_id,
+        "wait_for_seconds": wait_for_seconds,
         "thread_id": shell.current_thread_id,
     })
 
     output, _ = execute_bash(
-        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds,
     )
 
     # Return only new output since last check (saves tokens)
@@ -612,6 +619,12 @@ async def check_status(
     prev = last_outputs.get(sname, "")
     incremental = _get_incremental(output, prev)
     last_outputs[sname] = output
+
+    # Never return empty — always give status info
+    if not incremental.strip() or incremental == "(no new output)":
+        state = shell.state
+        cmd = shell.last_command or "(none)"
+        incremental = f"(no new output since last check)\nstate: {state}\nlast command: {cmd}"
 
     shell.save_state_to_disk()
     return incremental

@@ -148,13 +148,9 @@ def execute_bash(
 
 
 def assert_single_statement(command: str) -> None:
-    # Allow multi-statement commands (cmd1; cmd2; cmd3) — bash handles them fine.
-    # Only reject literal newlines which can corrupt pexpect line-by-line sending.
-    if "\n" in command.strip():
-        raise ValueError(
-            "Command should not contain newline characters. "
-            "Use semicolons to chain commands: cmd1; cmd2; cmd3"
-        )
+    # No-op: all commands are allowed. Multi-line commands are handled
+    # by wrapping in bash -c in the caller.
+    pass
 
 
 def get_bg_running_commandsinfo(bash_state: "BashState") -> str:
