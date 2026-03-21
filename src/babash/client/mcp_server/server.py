@@ -86,7 +86,11 @@ _shell_path: str = ""
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     """Manage BashState lifecycle — one per MCP session."""
-    CONFIG.update(3, 55, 5)
+    CONFIG.update(
+        timeout=float(os.getenv("BABASH_TIMEOUT", "2")),
+        timeout_while_output=float(os.getenv("BABASH_TIMEOUT_WHILE_OUTPUT", "15")),
+        output_wait_patience=float(os.getenv("BABASH_OUTPUT_PATIENCE", "3")),
+    )
 
     custom_instructions = os.getenv("BABASH_SERVER_INSTRUCTIONS")
     console = Console()
