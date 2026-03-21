@@ -17,7 +17,6 @@ from ...types_ import (
     FileWriteOrEdit,
     Initialize,
     ReadFiles,
-    ReadImage,
 )
 from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
 from ..tools import (

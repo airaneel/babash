@@ -309,7 +309,6 @@ def _handle_initialize(
 
 
 def _handle_context_save(arg: ContextSave, context: Context) -> str:
-    import subprocess as _sp
     relevant_files: list[str] = []
     warnings = ""
     arg.project_root_path = os.path.expanduser(arg.project_root_path)

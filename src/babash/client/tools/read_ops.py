@@ -4,11 +4,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from ...types_ import ReadFiles
-from ..bash_state import BashState
 from ..file_ops.extensions import select_max_tokens
 from ..repo_ops.file_stats import FileStats, load_workspace_stats, save_workspace_stats
-from .context import Context, default_enc, expand_user, read_image_from_shell, ImageData
+from .context import Context, default_enc, expand_user
 
 
 def range_format(start_line_num: Optional[int], end_line_num: Optional[int]) -> str:

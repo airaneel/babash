@@ -5,7 +5,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Optional
 
-from pydantic import ValidationError
 from syntax_checker import Output as SCOutput
 from syntax_checker import check_syntax as raw_check_syntax
 from wcmatch import glob as wcglob

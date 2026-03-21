@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Callable, Protocol, TypeVar, cast
+from typing import Protocol, TypeVar, cast
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 

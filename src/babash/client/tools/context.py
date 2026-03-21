@@ -5,13 +5,13 @@ import mimetypes
 import os
 from dataclasses import dataclass
 from os.path import expanduser
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 from ...types_ import Console
 from ..bash_state import BashState
-from ..encoder import get_default_encoder, EncoderDecoder
+from ..encoder import get_default_encoder
 
 
 @dataclass

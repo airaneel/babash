@@ -17,8 +17,8 @@ from ...types_ import (
 from ..bash_state import execute_bash
 from ..encoder import EncoderDecoder
 from .context import Context, ImageData
-from .init_ops import _handle_context_save, _handle_initialize, is_mode_change
-from .read_ops import read_file, read_files
+from .init_ops import _handle_context_save, is_mode_change
+from .read_ops import read_files
 from .write_ops import do_diff_edit, file_writing, write_file
 
 import json

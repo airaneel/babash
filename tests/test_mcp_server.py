@@ -5,7 +5,6 @@ import subprocess
 import sys
 from typing import Any, Callable
 
-
 BABASH_MCP = [sys.executable, "-m", "babash.client.mcp_server"]
 
 SendFn = Callable[[dict[str, Any]], None]
@@ -37,11 +36,18 @@ def _session() -> tuple[subprocess.Popen[str], SendFn, RecvFn, dict[str, Any]]:
             if "id" in msg:
                 return msg
 
-    send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "clientInfo": {"name": "test", "version": "1.0"},
-    }})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1.0"},
+            },
+        }
+    )
     init_result = recv()
     send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
@@ -92,10 +98,17 @@ def test_list_prompts() -> None:
 def test_run_command() -> None:
     proc, send, recv, _ = _session()
     try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "run_command",
-            "arguments": {"command": "echo mcp-test-pass"},
-        }})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command",
+                    "arguments": {"command": "echo mcp-test-pass"},
+                },
+            }
+        )
         r = recv()
         text = r["result"]["content"][0]["text"]
         assert "mcp-test-pass" in text
@@ -106,10 +119,17 @@ def test_run_command() -> None:
 def test_check_status() -> None:
     proc, send, recv, _ = _session()
     try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "check_status",
-            "arguments": {},
-        }})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check_status",
+                    "arguments": {},
+                },
+            }
+        )
         r = recv()
         assert "result" in r
     finally:
@@ -119,10 +139,17 @@ def test_check_status() -> None:
 def test_babash_initialize() -> None:
     proc, send, recv, _ = _session()
     try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "babash_initialize",
-            "arguments": {"type": "first_call"},
-        }})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "babash_initialize",
+                    "arguments": {"type": "first_call"},
+                },
+            }
+        )
         r = recv()
         text = r["result"]["content"][0]["text"]
         assert "Initialize call done" in text
@@ -134,10 +161,17 @@ def test_auto_init_on_run_command() -> None:
     """RunCommand should work without explicit Initialize."""
     proc, send, recv, _ = _session()
     try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "run_command",
-            "arguments": {"command": "echo auto-init"},
-        }})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command",
+                    "arguments": {"command": "echo auto-init"},
+                },
+            }
+        )
         r = recv()
         text = r["result"]["content"][0]["text"]
         assert "auto-init" in text

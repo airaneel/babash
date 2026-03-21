@@ -33,7 +33,6 @@ from .shell_process import (
     cleanup_orphaned_babash_screens,
     ensure_babash_block_in_rc_file,
     get_rc_file_path,
-    get_tmpdir,
     start_shell,
 )
 
