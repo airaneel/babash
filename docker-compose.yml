@@ -11,6 +11,7 @@ services:
     entrypoint: ["babash_mcp", "--transport", "streamable-http"]
     volumes:
       - workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]

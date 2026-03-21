@@ -1,0 +1,8 @@
+*.py
+__pycache__
+.venv
+.git
+*.lock
+*.model
+*.vocab
+htmlcov

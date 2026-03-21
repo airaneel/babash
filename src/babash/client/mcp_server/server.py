@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 from importlib import metadata
 from typing import Any, Literal
 
-from mcp.server.fastmcp import Context as McpContext, FastMCP
+from mcp.server.fastmcp import Context as McpContext
+from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from babash.client.modes import KTS
@@ -33,7 +34,13 @@ from ..tools import (
     read_image_from_shell,
 )
 from ..tools.write_ops import write_file
-from .helpers import CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, detect_errors, get_incremental, record_command
+from .helpers import (
+    CODING_MAX_TOKENS,
+    NONCODING_MAX_TOKENS,
+    detect_errors,
+    get_incremental,
+    record_command,
+)
 from .state import AppState, Console
 
 logging.basicConfig(
@@ -46,6 +53,7 @@ _shell_path: str = os.getenv("BABASH_SHELL", "")
 
 # --- Lifespan ---
 
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     CONFIG.update(
@@ -57,10 +65,16 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     tmp_dir = get_tmpdir()
 
     with BashState(
-        console=console, working_dir=os.path.join(tmp_dir, "claude_playground"),
-        bash_command_mode=None, file_edit_mode=None, write_if_empty_mode=None,
-        mode=None, use_screen=True, whitelist_for_overwrite=None,
-        thread_id=None, shell_path=_shell_path or None,
+        console=console,
+        working_dir=os.path.join(tmp_dir, "claude_playground"),
+        bash_command_mode=None,
+        file_edit_mode=None,
+        write_if_empty_mode=None,
+        mode=None,
+        use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
+        shell_path=_shell_path or None,
     ) as bash_state:
         console.log("babash version: " + str(metadata.version("babash")))
         app = AppState(
@@ -141,6 +155,7 @@ def get_app(ctx: McpContext) -> AppState:  # type: ignore[type-arg]
 
 def get_app_from_request() -> AppState:
     from mcp.server.lowlevel.server import request_ctx
+
     state = request_ctx.get().lifespan_context
     if not isinstance(state, AppState):
         raise RuntimeError("Server not initialized")
@@ -151,8 +166,17 @@ def ensure_init(app: AppState) -> None:
     if app.initialized:
         return
     app.initialized = True
-    initialize("first_call", Context(app.bash_state, app.console),
-               "", [], "", CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, "babash", "")
+    initialize(
+        "first_call",
+        Context(app.bash_state, app.console),
+        "",
+        [],
+        "",
+        CODING_MAX_TOKENS,
+        NONCODING_MAX_TOKENS,
+        "babash",
+        "",
+    )
 
 
 def make_context(app: AppState) -> Context:
@@ -161,6 +185,7 @@ def make_context(app: AppState) -> Context:
 
 # --- Resources ---
 
+
 @mcp.resource("babash://workspace/tree", description="Current workspace directory tree")
 def workspace_tree() -> str:
     app = get_app_from_request()
@@ -168,6 +193,7 @@ def workspace_tree() -> str:
     workspace = app.bash_state.workspace_root or app.bash_state.cwd
     try:
         from ..repo_ops.repo_context import get_repo_context
+
         tree, _ = get_repo_context(workspace)
         return f"Workspace: {workspace}\n\n{tree}"
     except Exception:
@@ -178,6 +204,7 @@ def workspace_tree() -> str:
 def workspace_env() -> str:
     import platform
     import shutil
+
     app = get_app_from_request()
     ensure_init(app)
     bs = app.bash_state
@@ -189,26 +216,47 @@ def workspace_env() -> str:
         f"mode: {bs.mode}",
         f"state: {bs.state}",
     ]
-    for tool in ["git", "docker", "python3", "node", "npm", "uv", "pip", "rg", "jq", "ssh", "curl"]:
+    for tool in [
+        "git",
+        "docker",
+        "python3",
+        "node",
+        "npm",
+        "uv",
+        "pip",
+        "rg",
+        "jq",
+        "ssh",
+        "curl",
+    ]:
         path = shutil.which(tool)
         if path:
             lines.append(f"has_{tool}: {path}")
     return "\n".join(lines)
 
 
-@mcp.resource("babash://workspace/processes", description="All sessions and running commands")
+@mcp.resource(
+    "babash://workspace/processes", description="All sessions and running commands"
+)
 def workspace_processes() -> str:
     app = get_app_from_request()
     ensure_init(app)
-    lines = [f"main: cwd={app.bash_state.cwd} state={app.bash_state.state} cmd={app.bash_state.last_command or '(idle)'}"]
+    lines = [
+        f"main: cwd={app.bash_state.cwd} state={app.bash_state.state} cmd={app.bash_state.last_command or '(idle)'}"
+    ]
     for name, shell in app.get_sessions().items():
-        lines.append(f"{name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(idle)'}")
+        lines.append(
+            f"{name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(idle)'}"
+        )
     for cid, state in app.bash_state.background_shells.items():
         lines.append(f"bg/{cid}: {state.last_command} (state={state.state})")
     return "\n".join(lines)
 
 
-@mcp.resource("babash://history", description="Command history with success/failure and error hints")
+@mcp.resource(
+    "babash://history",
+    description="Command history with success/failure and error hints",
+)
 def command_history() -> str:
     app = get_app_from_request()
     history = app.get_history()
@@ -225,28 +273,45 @@ def command_history() -> str:
 
 # --- Health ---
 
+
 @mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
 async def health_check(request: Any) -> Any:
     from starlette.responses import JSONResponse
+
     return JSONResponse({"status": "ok", "server": "babash"})
 
 
 # --- Prompts ---
 
-@mcp.prompt(name="KnowledgeTransfer", description="Save task context for knowledge transfer or resumption.")
+
+@mcp.prompt(
+    name="KnowledgeTransfer",
+    description="Save task context for knowledge transfer or resumption.",
+)
 async def knowledge_transfer(ctx: McpContext) -> str:  # type: ignore[type-arg]
     return KTS[get_app(ctx).bash_state.mode]
 
 
 # --- Tools ---
 
+
 @mcp.tool(
     description="Initialize the shell environment. Optional — auto-initializes on first tool call.",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def babash_initialize(
     ctx: McpContext,  # type: ignore[type-arg]
-    type: Literal["first_call", "user_asked_mode_change", "reset_shell", "user_asked_change_workspace"] = "first_call",
+    type: Literal[
+        "first_call",
+        "user_asked_mode_change",
+        "reset_shell",
+        "user_asked_change_workspace",
+    ] = "first_call",
     any_workspace_path: str = "",
     initial_files_to_read: list[str] | None = None,
     task_id_to_resume: str = "",
@@ -254,17 +319,28 @@ async def babash_initialize(
 ) -> str:
     app = get_app(ctx)
     app.initialized = True
-    init_arg = Initialize(type=type, any_workspace_path=any_workspace_path,
-                          initial_files_to_read=initial_files_to_read or [],
-                          task_id_to_resume=task_id_to_resume, mode_name=mode_name)
-    output, _, _ = _handle_initialize(init_arg, make_context(app), CODING_MAX_TOKENS, NONCODING_MAX_TOKENS)
+    init_arg = Initialize(
+        type=type,
+        any_workspace_path=any_workspace_path,
+        initial_files_to_read=initial_files_to_read or [],
+        task_id_to_resume=task_id_to_resume,
+        mode_name=mode_name,
+    )
+    output, _, _ = _handle_initialize(
+        init_arg, make_context(app), CODING_MAX_TOKENS, NONCODING_MAX_TOKENS
+    )
     instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
     return f"{output[0]}{instructions}\nInitialize call done.\n"
 
 
 @mcp.tool(
     description="Execute a shell command. Use session= for parallel execution.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
 )
 async def run_command(
     ctx: McpContext,  # type: ignore[type-arg]
@@ -282,10 +358,15 @@ async def run_command(
     if any(p in command for p in dangerous):
         try:
             from pydantic import BaseModel as _BM
+
             class Confirm(_BM):
                 proceed: bool = False
+
             from mcp.server.elicitation import AcceptedElicitation
-            result = await ctx.elicit(f"⚠️ Dangerous command: `{command}`\nProceed?", Confirm)
+
+            result = await ctx.elicit(
+                f"⚠️ Dangerous command: `{command}`\nProceed?", Confirm
+            )
             if not isinstance(result, AcceptedElicitation) or not result.data.proceed:
                 return "Command cancelled by user."
         except Exception:
@@ -307,14 +388,21 @@ async def run_command(
             f"Options: check_status(session='{sname}'), send_keys('Ctrl-c', session='{sname}'), or is_background=true"
         )
 
-    bash_cmd = BashCommand.model_validate({
-        "type": "command", "command": command, "is_background": is_background,
-        "wait_for_seconds": wait_for_seconds, "thread_id": shell.current_thread_id,
-    })
-    output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds)
+    bash_cmd = BashCommand.model_validate(
+        {
+            "type": "command",
+            "command": command,
+            "is_background": is_background,
+            "wait_for_seconds": wait_for_seconds,
+            "thread_id": shell.current_thread_id,
+        }
+    )
+    output, _ = execute_bash(
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds
+    )
 
     if output.startswith(command.strip()):
-        output = output[len(command.strip()):]
+        output = output[len(command.strip()) :]
 
     sname = session or "main"
     app.get_last_outputs()[sname] = output
@@ -325,7 +413,9 @@ async def run_command(
         output += "\n\n--- Hints ---\n" + "\n".join(errors)
 
     if not output.strip() or output.strip().startswith("---\n\nstatus"):
-        output = "(ok, no output)" if shell.state == "repl" else "(running, no output yet)"
+        output = (
+            "(ok, no output)" if shell.state == "repl" else "(running, no output yet)"
+        )
 
     await ctx.report_progress(1, 1, "done")
     shell.save_state_to_disk()
@@ -334,7 +424,12 @@ async def run_command(
 
 @mcp.tool(
     description="Check command status. Returns new output since last check.",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
@@ -346,11 +441,18 @@ async def check_status(
     ensure_init(app)
     shell = app.get_shell(session)
 
-    bash_cmd = BashCommand.model_validate({
-        "type": "status_check", "status_check": True, "bg_command_id": bg_command_id,
-        "wait_for_seconds": wait_for_seconds, "thread_id": shell.current_thread_id,
-    })
-    output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds)
+    bash_cmd = BashCommand.model_validate(
+        {
+            "type": "status_check",
+            "status_check": True,
+            "bg_command_id": bg_command_id,
+            "wait_for_seconds": wait_for_seconds,
+            "thread_id": shell.current_thread_id,
+        }
+    )
+    output, _ = execute_bash(
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds
+    )
 
     sname = session or "main"
     last_outputs = app.get_last_outputs()
@@ -366,19 +468,30 @@ async def check_status(
 
 @mcp.tool(
     description="Send text input to a running interactive program.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
 )
 async def send_input(
     ctx: McpContext,  # type: ignore[type-arg]
-    text: str, bg_command_id: str | None = None, session: str | None = None,
+    text: str,
+    bg_command_id: str | None = None,
+    session: str | None = None,
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
     shell = app.get_shell(session)
-    bash_cmd = BashCommand.model_validate({
-        "type": "send_text", "send_text": text, "bg_command_id": bg_command_id,
-        "thread_id": shell.current_thread_id,
-    })
+    bash_cmd = BashCommand.model_validate(
+        {
+            "type": "send_text",
+            "send_text": text,
+            "bg_command_id": bg_command_id,
+            "thread_id": shell.current_thread_id,
+        }
+    )
     output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
     shell.save_state_to_disk()
     return output
@@ -386,20 +499,31 @@ async def send_input(
 
 @mcp.tool(
     description="Send special keys. Use Ctrl-c to interrupt, arrow keys to navigate.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
 )
 async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
-    keys: list[str] | str = "Ctrl-c", bg_command_id: str | None = None, session: str | None = None,
+    keys: list[str] | str = "Ctrl-c",
+    bg_command_id: str | None = None,
+    session: str | None = None,
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
     shell = app.get_shell(session)
     keys_list = [keys] if isinstance(keys, str) else keys
-    bash_cmd = BashCommand.model_validate({
-        "type": "send_specials", "send_specials": keys_list, "bg_command_id": bg_command_id,
-        "thread_id": shell.current_thread_id,
-    })
+    bash_cmd = BashCommand.model_validate(
+        {
+            "type": "send_specials",
+            "send_specials": keys_list,
+            "bg_command_id": bg_command_id,
+            "thread_id": shell.current_thread_id,
+        }
+    )
     output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
     shell.save_state_to_disk()
     return output
@@ -407,13 +531,20 @@ async def send_keys(
 
 # --- Session tools ---
 
+
 @mcp.tool(
     description="Create a named shell session for parallel work.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
 )
 async def create_session(
     ctx: McpContext,  # type: ignore[type-arg]
-    name: str, working_directory: str = "",
+    name: str,
+    working_directory: str = "",
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
@@ -424,9 +555,15 @@ async def create_session(
         return f"Session '{name}' already exists."
     cwd = working_directory or app.bash_state.cwd
     sessions[name] = BashState(
-        console=app.console, working_dir=cwd, bash_command_mode=None,
-        file_edit_mode=None, write_if_empty_mode=None, mode=None,
-        use_screen=True, whitelist_for_overwrite=None, thread_id=None,
+        console=app.console,
+        working_dir=cwd,
+        bash_command_mode=None,
+        file_edit_mode=None,
+        write_if_empty_mode=None,
+        mode=None,
+        use_screen=True,
+        whitelist_for_overwrite=None,
+        thread_id=None,
         shell_path=_shell_path or None,
     )
     return f"Session '{name}' created (cwd: {cwd})."
@@ -434,20 +571,32 @@ async def create_session(
 
 @mcp.tool(
     description="List all shell sessions and their status.",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def list_sessions(ctx: McpContext) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
     ensure_init(app)
     lines = [f"- main: cwd={app.bash_state.cwd} state={app.bash_state.state} (default)"]
     for name, shell in app.get_sessions().items():
-        lines.append(f"- {name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(none)'}")
+        lines.append(
+            f"- {name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(none)'}"
+        )
     return "\n".join(lines)
 
 
 @mcp.tool(
     description="Destroy a named session.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
 )
 async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
@@ -467,17 +616,27 @@ async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[ty
 
 # --- File tools ---
 
+
 @mcp.tool(
     description="Read file contents. Supports line ranges: file.py:10-20",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def read_files_tool(ctx: McpContext, file_paths: list[str]) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
     ensure_init(app)
     rf = ReadFiles(file_paths=file_paths)
     result, file_ranges, _ = read_files(
-        rf.file_paths, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app),
-        rf.start_line_nums, rf.end_line_nums,
+        rf.file_paths,
+        CODING_MAX_TOKENS,
+        NONCODING_MAX_TOKENS,
+        make_context(app),
+        rf.start_line_nums,
+        rf.end_line_nums,
     )
     if file_ranges:
         app.bash_state.add_to_whitelist_for_overwrite(file_ranges)
@@ -487,7 +646,12 @@ async def read_files_tool(ctx: McpContext, file_paths: list[str]) -> str:  # typ
 
 @mcp.tool(
     description="Read an image file. Provide absolute path.",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
@@ -498,13 +662,20 @@ async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[ty
 
 @mcp.tool(
     description="Create a new file. Fails if file exists.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
 )
 async def create_file(ctx: McpContext, file_path: str, content: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
     ensure_init(app)
     wf = WriteIfEmpty(file_path=file_path, file_content=content)
-    result, paths = write_file(wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app))
+    result, paths = write_file(
+        wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app)
+    )
     if paths:
         app.bash_state.add_to_whitelist_for_overwrite(paths)
     app.bash_state.save_state_to_disk()
@@ -517,20 +688,30 @@ with open(os.path.join(os.path.dirname(__file__), "..", "diff-instructions.txt")
 
 @mcp.tool(
     description="Edit an existing file.\n" + _diff_instructions,
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def file_write_or_edit(
     ctx: McpContext,  # type: ignore[type-arg]
-    file_path: str, percentage_to_change: int, text_or_search_replace_blocks: str,
+    file_path: str,
+    percentage_to_change: int,
+    text_or_search_replace_blocks: str,
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
     fwe = FileWriteOrEdit(
-        file_path=file_path, percentage_to_change=percentage_to_change,
+        file_path=file_path,
+        percentage_to_change=percentage_to_change,
         text_or_search_replace_blocks=text_or_search_replace_blocks,
         thread_id=app.bash_state.current_thread_id,
     )
-    result, paths = file_writing(fwe, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app))
+    result, paths = file_writing(
+        fwe, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app)
+    )
     if paths:
         app.bash_state.add_to_whitelist_for_overwrite(paths)
     app.bash_state.save_state_to_disk()
@@ -539,20 +720,33 @@ async def file_write_or_edit(
 
 @mcp.tool(
     description="Save task context for later resumption.",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def context_save(
     ctx: McpContext,  # type: ignore[type-arg]
-    id: str, description: str, relevant_file_globs: list[str], project_root_path: str = "",
+    id: str,
+    description: str,
+    relevant_file_globs: list[str],
+    project_root_path: str = "",
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
-    cs = ContextSave(id=id, project_root_path=project_root_path,
-                     description=description, relevant_file_globs=relevant_file_globs)
+    cs = ContextSave(
+        id=id,
+        project_root_path=project_root_path,
+        description=description,
+        relevant_file_globs=relevant_file_globs,
+    )
     return _handle_context_save(cs, make_context(app))
 
 
 # --- Entry point ---
+
 
 async def main(shell_path: str = "") -> None:
     global _shell_path

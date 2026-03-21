@@ -1,5 +1,11 @@
 FROM nikolaik/python-nodejs:python3.12-nodejs22
 
+# === Docker CLI (for managing host Docker via socket mount) ===
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) DARCH=x86_64;; arm64) DARCH=aarch64;; *) DARCH=x86_64;; esac \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/$DARCH/docker-27.5.1.tgz" | \
+    tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
 # === System packages (only what nikolaik doesn't include) ===
 # nikolaik already has: git, curl, wget, make, gcc, g++, ca-certificates, gnupg, procps
 RUN apt-get update && apt-get install -y --no-install-recommends \
