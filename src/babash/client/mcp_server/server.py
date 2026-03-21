@@ -4,26 +4,33 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib import metadata
-from typing import Any
+from typing import Any, Literal
 
-import mcp.types as types
+from mcp.server.fastmcp import Context as McpContext
 from mcp.server.fastmcp import FastMCP
-from mcp.server.lowlevel.server import request_ctx
 
 from babash.client.modes import KTS
-from babash.client.tool_prompts import TOOL_PROMPTS
 
 from ...types_ import (
+    BashCommand,
+    ContextSave,
+    FileWriteOrEdit,
     Initialize,
+    ReadFiles,
+    ReadImage,
 )
-from ..bash_state import CONFIG, BashState, get_tmpdir
+from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
 from ..tools import (
     Context,
+    ImageData,
+    _handle_context_save,
+    _handle_initialize,
     default_enc,
+    file_writing,
     get_tool_output,
     initialize,
-    parse_tool_by_name,
-    which_tool_name,
+    read_files,
+    read_image_from_shell,
 )
 
 logging.basicConfig(
@@ -114,17 +121,36 @@ Use is_background=true for commands that run for a long time (servers, builds).
     port=int(os.getenv("BABASH_PORT", "8000")),
 )
 
-_server = mcp._mcp_server
 
-
-def _get_app_state() -> AppState:
-    """Get per-session AppState from MCP request context."""
-    ctx = request_ctx.get()
-    state = ctx.lifespan_context
+def _get_app(ctx: McpContext) -> AppState:  # type: ignore[type-arg]
+    """Get per-session AppState from MCP context."""
+    state = ctx.request_context.lifespan_context
     if not isinstance(state, AppState):
-        raise RuntimeError("Server not initialized — call Initialize first")
+        raise RuntimeError("Server not initialized")
     return state
 
+
+def _ensure_init(app: AppState) -> None:
+    """Auto-initialize on first tool call."""
+    if app.initialized:
+        return
+    app.initialized = True
+    initialize(
+        "first_call",
+        Context(app.bash_state, app.console),
+        "", [], "", CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, "babash", "",
+    )
+
+
+def _ctx(app: AppState) -> Context:
+    return Context(app.bash_state, app.console)
+
+
+def _tid(app: AppState) -> str:
+    return app.bash_state.current_thread_id
+
+
+# --- Health ---
 
 @mcp.custom_route("/health", methods=["GET"])  # type: ignore[untyped-decorator]
 async def health_check(request: Any) -> Any:
@@ -133,156 +159,232 @@ async def health_check(request: Any) -> Any:
     return JSONResponse({"status": "ok", "server": "babash"})
 
 
-PROMPTS = {
-    "KnowledgeTransfer": (
-        types.Prompt(
-            name="KnowledgeTransfer",
-            description="Save task context for knowledge transfer or resumption.",
-        ),
-        KTS,
-    )
-}
+# --- Prompts ---
+
+@mcp.prompt(name="KnowledgeTransfer", description="Save task context for knowledge transfer or resumption.")
+async def knowledge_transfer(ctx: McpContext) -> str:  # type: ignore[type-arg]
+    app = _get_app(ctx)
+    return KTS[app.bash_state.mode]
 
 
-@_server.list_resources()  # type: ignore
-async def handle_list_resources() -> list[types.Resource]:
-    return []
+# --- Tools ---
 
-
-@_server.list_prompts()  # type: ignore
-async def handle_list_prompts() -> list[types.Prompt]:
-    return [x[0] for x in PROMPTS.values()]
-
-
-@_server.get_prompt()  # type: ignore
-async def handle_get_prompt(
-    name: str, arguments: dict[str, str] | None
-) -> types.GetPromptResult:
-    app = _get_app_state()
-    messages = [
-        types.PromptMessage(
-            role="user",
-            content=types.TextContent(
-                type="text", text=PROMPTS[name][1][app.bash_state.mode]
-            ),
-        )
-    ]
-    return types.GetPromptResult(messages=messages)
-
-
-@_server.list_tools()  # type: ignore
-async def handle_list_tools() -> list[types.Tool]:
-    return TOOL_PROMPTS
-
-
-def _translate_tool(name: str, arguments: dict[str, Any], thread_id: str) -> tuple[str, dict[str, Any]]:
-    """Translate simple tool names to internal BashCommand format."""
-    if name == "RunCommand":
-        return "BashCommand", {
-            "type": "command",
-            "command": arguments["command"],
-            "is_background": arguments.get("is_background", False),
-            "wait_for_seconds": arguments.get("wait_for_seconds"),
-            "thread_id": thread_id,
-        }
-    if name == "CheckStatus":
-        return "BashCommand", {
-            "type": "status_check",
-            "status_check": True,
-            "bg_command_id": arguments.get("bg_command_id"),
-            "thread_id": thread_id,
-        }
-    if name == "SendInput":
-        return "BashCommand", {
-            "type": "send_text",
-            "send_text": arguments["text"],
-            "bg_command_id": arguments.get("bg_command_id"),
-            "thread_id": thread_id,
-        }
-    if name == "SendKeys":
-        return "BashCommand", {
-            "type": "send_specials",
-            "send_specials": arguments["keys"],
-            "bg_command_id": arguments.get("bg_command_id"),
-            "thread_id": thread_id,
-        }
-    # All other tools pass through with thread_id injected
-    arguments.setdefault("thread_id", thread_id)
-    return name, arguments
-
-
-def _auto_initialize(app: AppState) -> list[str]:
-    """Auto-initialize if not done yet. Returns init output as list."""
-    if app.initialized:
-        return []
+@mcp.tool(description="""Initialize the shell environment. Optional — auto-initializes on first tool call.
+Set workspace path, execution mode, or resume a previous task.""")
+async def babash_initialize(
+    ctx: McpContext,  # type: ignore[type-arg]
+    type: Literal["first_call", "user_asked_mode_change", "reset_shell", "user_asked_change_workspace"] = "first_call",
+    any_workspace_path: str = "",
+    initial_files_to_read: list[str] | None = None,
+    task_id_to_resume: str = "",
+    mode_name: Literal["babash", "architect", "code_writer"] = "babash",
+) -> str:
+    app = _get_app(ctx)
     app.initialized = True
-    init_result, _, _ = initialize(
-        "first_call",
-        Context(app.bash_state, app.console),
-        "",
-        [],
-        "",
-        CODING_MAX_TOKENS,
-        NONCODING_MAX_TOKENS,
-        "babash",
-        "",
+
+    init_arg = Initialize(
+        type=type,
+        any_workspace_path=any_workspace_path,
+        initial_files_to_read=initial_files_to_read or [],
+        task_id_to_resume=task_id_to_resume,
+        mode_name=mode_name,
     )
-    return [init_result]
+
+    output, _, _ = _handle_initialize(
+        init_arg, _ctx(app), CODING_MAX_TOKENS, NONCODING_MAX_TOKENS
+    )
+    result = output[0]
+    instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
+    return f"{result}{instructions}\nInitialize call done.\n"
 
 
-@_server.call_tool()  # type: ignore
-async def handle_call_tool(
-    name: str, arguments: dict[str, Any] | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    if not arguments:
-        arguments = {}
+@mcp.tool(description="""Execute a shell command.
+Only one foreground command at a time — use CheckStatus before running another.
+Set is_background=true for long-running commands (servers, builds).""")
+async def run_command(
+    ctx: McpContext,  # type: ignore[type-arg]
+    command: str,
+    is_background: bool = False,
+    wait_for_seconds: float | None = None,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+    await ctx.info(f"$ {command}")
 
-    app = _get_app_state()
-    bash_state = app.bash_state
-    is_init = name == "Initialize"
+    bash_cmd = BashCommand.model_validate({
+        "type": "command",
+        "command": command,
+        "is_background": is_background,
+        "wait_for_seconds": wait_for_seconds,
+        "thread_id": _tid(app),
+    })
 
-    # Auto-initialize on first non-Initialize tool call
-    if is_init:
-        app.initialized = True
-    else:
-        _auto_initialize(app)
+    output, _ = execute_bash(
+        app.bash_state, default_enc, bash_cmd,
+        NONCODING_MAX_TOKENS, wait_for_seconds,
+    )
 
-    name, arguments = _translate_tool(name, arguments, bash_state.current_thread_id)
+    # Strip echo of the command itself
+    if output.startswith(command.strip()):
+        output = output[len(command.strip()):]
 
-    tool_type = which_tool_name(name)
-    tool_call = parse_tool_by_name(name, arguments)
+    app.bash_state.save_state_to_disk()
+    return output
 
-    try:
-        output_or_dones, _ = get_tool_output(
-            Context(bash_state, bash_state.console),
-            tool_call,
-            default_enc,
-            0.0,
-            lambda x, y: ("", 0),
-            CODING_MAX_TOKENS,
-            NONCODING_MAX_TOKENS,
-        )
-    except Exception as e:
-        logger.exception("Tool call failed: %s", name)
-        output_or_dones = [f"GOT EXCEPTION while calling tool. Error: {e}"]
 
-    content: list[types.TextContent | types.ImageContent | types.EmbeddedResource] = []
-    for output_or_done in output_or_dones:
-        if not isinstance(output_or_done, str):
-            content.append(types.ImageContent(
-                type="image",
-                data=output_or_done.data,
-                mimeType=output_or_done.media_type,
-            ))
-            continue
+@mcp.tool(description="Check if a command is still running. Returns current output and status.")
+async def check_status(
+    ctx: McpContext,  # type: ignore[type-arg]
+    bg_command_id: str | None = None,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
 
-        if is_init:
-            instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
-            output_or_done += f"{instructions}\nInitialize call done.\n"
+    bash_cmd = BashCommand.model_validate({
+        "type": "status_check",
+        "status_check": True,
+        "bg_command_id": bg_command_id,
+        "thread_id": _tid(app),
+    })
 
-        content.append(types.TextContent(type="text", text=output_or_done))
+    output, _ = execute_bash(
+        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+    )
+    app.bash_state.save_state_to_disk()
+    return output
 
-    return content
+
+@mcp.tool(description="Send text input to a running interactive program (e.g. password prompt, REPL).")
+async def send_input(
+    ctx: McpContext,  # type: ignore[type-arg]
+    text: str,
+    bg_command_id: str | None = None,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    bash_cmd = BashCommand.model_validate({
+        "type": "send_text",
+        "send_text": text,
+        "bg_command_id": bg_command_id,
+        "thread_id": _tid(app),
+    })
+
+    output, _ = execute_bash(
+        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+    )
+    app.bash_state.save_state_to_disk()
+    return output
+
+
+@mcp.tool(description="Send special keys to a running program. Use Ctrl-c to interrupt, arrow keys to navigate, Enter to confirm.")
+async def send_keys(
+    ctx: McpContext,  # type: ignore[type-arg]
+    keys: list[Literal["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]],
+    bg_command_id: str | None = None,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    bash_cmd = BashCommand.model_validate({
+        "type": "send_specials",
+        "send_specials": keys,
+        "bg_command_id": bg_command_id,
+        "thread_id": _tid(app),
+    })
+
+    output, _ = execute_bash(
+        app.bash_state, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None,
+    )
+    app.bash_state.save_state_to_disk()
+    return output
+
+
+@mcp.tool(description="""Read content of one or more files.
+Provide absolute paths (~ allowed). Supports line ranges: file.py:10-20""")
+async def read_files_tool(
+    ctx: McpContext,  # type: ignore[type-arg]
+    file_paths: list[str],
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    rf = ReadFiles(file_paths=file_paths)
+    result, file_ranges, _ = read_files(
+        rf.file_paths, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, _ctx(app),
+        rf.start_line_nums, rf.end_line_nums,
+    )
+
+    if file_ranges:
+        app.bash_state.add_to_whitelist_for_overwrite(file_ranges)
+    app.bash_state.save_state_to_disk()
+    return result
+
+
+@mcp.tool(description="Read an image file and return its contents. Provide absolute path.")
+async def read_image(
+    ctx: McpContext,  # type: ignore[type-arg]
+    file_path: str,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    image = read_image_from_shell(file_path, _ctx(app))
+    return f"[Image: {image.media_type}, {len(image.data)} bytes base64]"
+
+
+with open(os.path.join(os.path.dirname(__file__), "..", "diff-instructions.txt")) as _f:
+    _diff_instructions = _f.read()
+
+
+@mcp.tool(description="""Write or edit a file.
+Set percentage_to_change: estimate what %% of existing lines will change (0-100).
+If > 50: provide full file content. If <= 50: provide search/replace blocks.
+Use absolute paths (~ allowed).
+""" + _diff_instructions)
+async def file_write_or_edit(
+    ctx: McpContext,  # type: ignore[type-arg]
+    file_path: str,
+    percentage_to_change: int,
+    text_or_search_replace_blocks: str,
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    fwe = FileWriteOrEdit(
+        file_path=file_path,
+        percentage_to_change=percentage_to_change,
+        text_or_search_replace_blocks=text_or_search_replace_blocks,
+        thread_id=_tid(app),
+    )
+
+    result, paths = file_writing(fwe, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, _ctx(app))
+
+    if paths:
+        app.bash_state.add_to_whitelist_for_overwrite(paths)
+    app.bash_state.save_state_to_disk()
+    return result
+
+
+@mcp.tool(description="""Save task context and relevant files for later resumption.
+Set id to a unique identifier. Set description with detailed task context in markdown.""")
+async def context_save(
+    ctx: McpContext,  # type: ignore[type-arg]
+    id: str,
+    description: str,
+    relevant_file_globs: list[str],
+    project_root_path: str = "",
+) -> str:
+    app = _get_app(ctx)
+    _ensure_init(app)
+
+    cs = ContextSave(
+        id=id,
+        project_root_path=project_root_path,
+        description=description,
+        relevant_file_globs=relevant_file_globs,
+    )
+    return _handle_context_save(cs, _ctx(app))
 
 
 async def main(shell_path: str = "") -> None:
