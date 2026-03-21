@@ -3,7 +3,6 @@ import os
 from mcp.types import Tool, ToolAnnotations
 
 from ..types_ import (
-    BashCommand,
     ContextSave,
     FileWriteOrEdit,
     Initialize,
@@ -29,21 +28,63 @@ TOOL_PROMPTS = [
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     ),
     Tool(
-        inputSchema=BashCommand.model_json_schema(),
-        name="BashCommand",
-        description="""Execute shell commands or interact with running processes.
-IMPORTANT: Each `type` value has its own required field. Do NOT mix them.
-- type="command" → set `command` (string). Optionally set `is_background` for background execution.
-- type="status_check" → set `status_check` to true. No other fields needed.
-- type="send_text" → set `send_text` (string). Do NOT use `command` field.
-- type="send_specials" → set `send_specials` (array of keys like "Enter", "Ctrl-c", "Key-up").
-- type="send_ascii" → set `send_ascii` (array of integer ASCII codes).
-For background commands: set `is_background` to true with type="command".
-To interact with a background command: set `bg_command_id` on non-command types.
-Only one foreground command runs at a time. Check status before running a new one.
-Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
+        inputSchema={
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute."},
+                "is_background": {"type": "boolean", "default": False, "description": "Run in background shell."},
+                "wait_for_seconds": {"type": "number", "description": "Max seconds to wait for output."},
+            },
+        },
+        name="RunCommand",
+        description="""Execute a shell command.
+- Only one foreground command runs at a time. Check status with CheckStatus before running a new one.
+- Set `is_background` to true for long-running commands. Returns a bg_command_id.
+- Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
 """,
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+    ),
+    Tool(
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "bg_command_id": {"type": "string", "description": "Background command ID. Omit to check the main shell."},
+            },
+        },
+        name="CheckStatus",
+        description="Check if a command is still running. Returns current output and status.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    ),
+    Tool(
+        inputSchema={
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {"type": "string", "description": "Text to send to stdin of the running program."},
+                "bg_command_id": {"type": "string", "description": "Background command ID. Omit for main shell."},
+            },
+        },
+        name="SendInput",
+        description="Send text input to a running interactive program (e.g. password prompt, interactive CLI).",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    ),
+    Tool(
+        inputSchema={
+            "type": "object",
+            "required": ["keys"],
+            "properties": {
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]},
+                    "description": "Special keys to send.",
+                },
+                "bg_command_id": {"type": "string", "description": "Background command ID. Omit for main shell."},
+            },
+        },
+        name="SendKeys",
+        description="Send special keys to a running program. Use Ctrl-c to interrupt, arrow keys to navigate, Enter to confirm.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
     ),
     Tool(
         inputSchema=ReadFiles.model_json_schema(),

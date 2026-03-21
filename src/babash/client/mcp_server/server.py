@@ -155,19 +155,54 @@ async def handle_list_tools() -> list[types.Tool]:
     return TOOL_PROMPTS
 
 
+def _translate_tool(name: str, arguments: dict[str, Any], thread_id: str) -> tuple[str, dict[str, Any]]:
+    """Translate simple tool names to internal BashCommand format."""
+    if name == "RunCommand":
+        return "BashCommand", {
+            "type": "command",
+            "command": arguments["command"],
+            "is_background": arguments.get("is_background", False),
+            "wait_for_seconds": arguments.get("wait_for_seconds"),
+            "thread_id": thread_id,
+        }
+    if name == "CheckStatus":
+        return "BashCommand", {
+            "type": "status_check",
+            "status_check": True,
+            "bg_command_id": arguments.get("bg_command_id"),
+            "thread_id": thread_id,
+        }
+    if name == "SendInput":
+        return "BashCommand", {
+            "type": "send_text",
+            "send_text": arguments["text"],
+            "bg_command_id": arguments.get("bg_command_id"),
+            "thread_id": thread_id,
+        }
+    if name == "SendKeys":
+        return "BashCommand", {
+            "type": "send_specials",
+            "send_specials": arguments["keys"],
+            "bg_command_id": arguments.get("bg_command_id"),
+            "thread_id": thread_id,
+        }
+    # All other tools pass through with thread_id injected
+    arguments.setdefault("thread_id", thread_id)
+    return name, arguments
+
+
 @_server.call_tool()  # type: ignore
 async def handle_call_tool(
     name: str, arguments: dict[str, Any] | None
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     if not arguments:
-        raise ValueError("Missing arguments")
+        arguments = {}
 
     app = _get_app_state()
     bash_state = app.bash_state
+    is_init = name == "Initialize"
 
-    # Inject session's thread_id so tools don't need it from the LLM
-    if "thread_id" not in arguments or not arguments["thread_id"]:
-        arguments["thread_id"] = bash_state.current_thread_id
+    name, arguments = _translate_tool(name, arguments, bash_state.current_thread_id)
 
     tool_type = which_tool_name(name)
     tool_call = parse_tool_by_name(name, arguments)
@@ -196,7 +231,7 @@ async def handle_call_tool(
             ))
             continue
 
-        if issubclass(tool_type, Initialize):
+        if is_init:
             instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
             output_or_done += f"{instructions}\nInitialize call done.\n"
 
