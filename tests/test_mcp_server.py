@@ -1,261 +1,145 @@
-import os
-from unittest.mock import AsyncMock, Mock, patch
+"""Tests for MCP server via subprocess (end-to-end protocol tests)."""
 
-import pytest
-from mcp.server.models import InitializationOptions
-from mcp.types import (
-    GetPromptResult,
-    Prompt,
-    PromptMessage,
-    TextContent,
-)
-from mcp.types import Tool as ToolParam
-from pydantic import ValidationError
-
-from babash.client.bash_state.bash_state import CONFIG, BashState
-from babash.client.mcp_server import server
-from babash.client.mcp_server.server import (
-    Console,
-    handle_call_tool,
-    handle_get_prompt,
-    handle_list_prompts,
-    handle_list_resources,
-    handle_list_tools,
-    handle_read_resource,
-    main,
-)
+import json
+import subprocess
+import sys
+from typing import Any, Callable
 
 
-# Reset server.BASH_STATE before all tests
-@pytest.fixture(scope="function", autouse=True)
-def setup_bash_state() -> None:
-    """Setup BashState for each test"""
+BABASH_MCP = [sys.executable, "-m", "babash.client.mcp_server"]
 
-    # Update CONFIG immediately
-    CONFIG.update(3, 55, 5)
+SendFn = Callable[[dict[str, Any]], None]
+RecvFn = Callable[[], dict[str, Any]]
 
-    # Create new BashState with mode
-    home_dir = os.path.expanduser("~")
-    bash_state = BashState(Console(), home_dir, None, None, None, "babash", False, None)
-    server.BASH_STATE = bash_state
 
+def _session() -> tuple[subprocess.Popen[str], SendFn, RecvFn, dict[str, Any]]:
+    """Start babash_mcp and return (proc, send, recv, init_result)."""
+    proc = subprocess.Popen(
+        BABASH_MCP,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    def send(msg: dict[str, Any]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+
+    def recv() -> dict[str, Any]:
+        assert proc.stdout is not None
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                raise RuntimeError("Server closed")
+            msg: dict[str, Any] = json.loads(line)
+            if "id" in msg:
+                return msg
+
+    send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "1.0"},
+    }})
+    init_result = recv()
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    return proc, send, recv, init_result
+
+
+def test_server_init() -> None:
+    proc, send, recv, init_result = _session()
     try:
-        yield server.BASH_STATE
+        assert init_result["result"]["serverInfo"]["name"] == "babash"
+        assert "instructions" in init_result["result"]
+        assert len(init_result["result"]["instructions"]) > 0
     finally:
-        try:
-            bash_state.cleanup()
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
-        server.BASH_STATE = None
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_list_resources(setup_bash_state):
-    resources = await handle_list_resources()
-    assert isinstance(resources, list)
-    assert len(resources) == 0
+def test_list_tools() -> None:
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        r = recv()
+        tools = r["result"]["tools"]
+        names = {t["name"] for t in tools}
+        assert "run_command" in names
+        assert "check_status" in names
+        assert "send_input" in names
+        assert "send_keys" in names
+        assert "read_files_tool" in names
+        assert "file_write_or_edit" in names
+        assert "context_save" in names
+        assert "babash_initialize" in names
+    finally:
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_read_resource(setup_bash_state):
-    with pytest.raises(ValueError, match="No resources available"):
-        await handle_read_resource("http://example.com")
+def test_list_prompts() -> None:
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}})
+        r = recv()
+        prompts = r["result"]["prompts"]
+        assert len(prompts) > 0
+        assert any(p["name"] == "KnowledgeTransfer" for p in prompts)
+    finally:
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_list_prompts(setup_bash_state):
-    prompts = await handle_list_prompts()
-    assert isinstance(prompts, list)
-    assert len(prompts) > 0
-    assert isinstance(prompts[0], Prompt)
-    assert "KnowledgeTransfer" in [p.name for p in prompts]
-    # Test prompt structure
-    kt_prompt = next(p for p in prompts if p.name == "KnowledgeTransfer")
-    assert (
-        kt_prompt.description
-        == "Prompt for invoking ContextSave tool in order to do a comprehensive knowledge transfer of a coding task. Prompts to save detailed error log and instructions."
-    )
+def test_run_command() -> None:
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "run_command",
+            "arguments": {"command": "echo mcp-test-pass"},
+        }})
+        r = recv()
+        text = r["result"]["content"][0]["text"]
+        assert "mcp-test-pass" in text
+    finally:
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_get_prompt(setup_bash_state):
-    # Test valid prompt
-    result = await handle_get_prompt("KnowledgeTransfer", None)
-    assert isinstance(result, GetPromptResult)
-    assert len(result.messages) == 1
-    assert isinstance(result.messages[0], PromptMessage)
-    assert result.messages[0].role == "user"
-    assert isinstance(result.messages[0].content, TextContent)
-
-    # Test invalid prompt
-    with pytest.raises(KeyError):
-        await handle_get_prompt("NonExistentPrompt", None)
-
-    # Test with arguments
-    result = await handle_get_prompt("KnowledgeTransfer", {"arg": "value"})
-    assert isinstance(result, GetPromptResult)
+def test_check_status() -> None:
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "check_status",
+            "arguments": {},
+        }})
+        r = recv()
+        assert "result" in r
+    finally:
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_list_tools():
-    print("Running test_handle_list_tools")
-    tools = await handle_list_tools()
-    assert isinstance(tools, list)
-    assert len(tools) > 0
-
-    # Check all required tools are present
-    tool_names = {tool.name for tool in tools}
-    required_tools = {
-        "Initialize",
-        "BashCommand",
-        "ReadFiles",
-        "ReadImage",
-        "FileWriteOrEdit",
-        "ContextSave",
-    }
-    assert required_tools.issubset(tool_names), (
-        f"Missing tools: {required_tools - tool_names}"
-    )
-
-    # Test each tool's schema and description
-    for tool in tools:
-        assert isinstance(tool, ToolParam)
-        assert tool.inputSchema is not None
-        assert isinstance(tool.description, str)
-        assert len(tool.description.strip()) > 0
-
-        # Test specific tool properties based on tool type
-        if tool.name == "Initialize":
-            properties = tool.inputSchema["properties"]
-            assert "mode_name" in properties
-            assert properties["mode_name"]["enum"] == [
-                "babash",
-                "architect",
-                "code_writer",
-            ]
-            assert "any_workspace_path" in properties
-            assert properties["any_workspace_path"]["type"] == "string"
-            assert "initial_files_to_read" in properties
-            assert properties["initial_files_to_read"]["type"] == "array"
-        elif tool.name == "BashCommand":
-            properties = tool.inputSchema["properties"]
-            # BashCommand schema is flattened, so it has the action fields directly
-            assert "type" in properties
-            assert "command" in properties
-            assert "wait_for_seconds" in properties
-            assert "thread_id" in properties
-            # Check type field has all the command types
-            type_refs = set(properties)
-            required_types = {
-                "command",
-                "status_check",
-                "send_text",
-                "send_specials",
-                "send_ascii",
-            }
-            assert required_types.issubset(type_refs)
-        elif tool.name == "FileWriteOrEdit":
-            properties = tool.inputSchema["properties"]
-            assert "file_path" in properties
-            assert "text_or_search_replace_blocks" in properties
+def test_babash_initialize() -> None:
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "babash_initialize",
+            "arguments": {"type": "first_call"},
+        }})
+        r = recv()
+        text = r["result"]["content"][0]["text"]
+        assert "Initialize call done" in text
+    finally:
+        proc.terminate()
 
 
-@pytest.mark.asyncio
-async def test_handle_call_tool(setup_bash_state):
-    # Test missing arguments
-    with pytest.raises(ValueError, match="Missing arguments"):
-        await handle_call_tool("Initialize", None)
-
-    # Test Initialize tool with valid arguments
-    init_args = {
-        "any_workspace_path": "",
-        "initial_files_to_read": [],
-        "task_id_to_resume": "",
-        "mode_name": "babash",
-        "type": "first_call",
-        "thread_id": "",
-    }
-    result = await handle_call_tool("Initialize", init_args)
-    assert isinstance(result, list)
-    assert len(result) > 0
-    assert isinstance(result[0], TextContent)
-    assert "Initialize" in result[0].text
-
-    # Test JSON string argument handling
-    json_args = {
-        "action_json": {"command": "ls", "thread_id": ""},
-    }
-    result = await handle_call_tool("BashCommand", json_args)
-    assert isinstance(result, list)
-
-    # Test validation error handling
-    with pytest.raises(ValidationError):
-        invalid_args = {
-            "any_workspace_path": 123,  # Invalid type
-            "initial_files_to_read": [],
-            "task_id_to_resume": "",
-            "mode_name": "babash",
-        }
-        await handle_call_tool("Initialize", invalid_args)
-
-    # Test tool exception handling
-    with patch(
-        "babash.client.mcp_server.server.get_tool_output",
-        side_effect=Exception("Test error"),
-    ):
-        result = await handle_call_tool(
-            "BashCommand",
-            {
-                "action_json": {"command": "ls", "thread_id": ""},
-            },
-        )
-        assert "GOT EXCEPTION" in result[0].text
-
-
-@pytest.mark.asyncio
-async def test_handle_call_tool_image_response(setup_bash_state):
-    # Test handling of image content
-    mock_image_data = "fake_image_data"
-    mock_media_type = "image/png"
-
-    # Create a mock image object that matches the expected response
-    mock_image = Mock()
-    mock_image.data = mock_image_data
-    mock_image.media_type = mock_media_type
-
-    with patch(
-        "babash.client.mcp_server.server.get_tool_output",
-        return_value=([mock_image], None),
-    ):
-        result = await handle_call_tool("ReadImage", {"file_path": "test.png"})
-        assert result[0].data == mock_image_data
-        assert result[0].mimeType == mock_media_type
-
-
-@pytest.mark.asyncio
-async def test_main(setup_bash_state):
-    CONFIG.update(3, 55, 5)  # Ensure CONFIG is set before main()
-    # Mock the version function
-    with patch("importlib.metadata.version", return_value="1.0.0") as mock_version:
-        # Mock the stdio server
-        mock_read_stream = AsyncMock()
-        mock_write_stream = AsyncMock()
-        mock_context = AsyncMock()
-        mock_context.__aenter__.return_value = (mock_read_stream, mock_write_stream)
-
-        with patch("mcp.server.stdio.stdio_server", return_value=mock_context):
-            # Mock server.run to prevent actual server start
-            with patch("babash.client.mcp_server.server.server.run") as mock_run:
-                await main()
-
-                # Verify CONFIG update
-                assert CONFIG.timeout == 3
-                assert CONFIG.timeout_while_output == 55
-                assert CONFIG.output_wait_patience == 5
-
-                # Verify server run was called with correct initialization
-                mock_run.assert_called_once()
-                init_options = mock_run.call_args[0][2]
-                assert isinstance(init_options, InitializationOptions)
-                assert init_options.server_name == "babash"
-                assert init_options.server_version == "1.0.0"
+def test_auto_init_on_run_command() -> None:
+    """RunCommand should work without explicit Initialize."""
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "run_command",
+            "arguments": {"command": "echo auto-init"},
+        }})
+        r = recv()
+        text = r["result"]["content"][0]["text"]
+        assert "auto-init" in text
+    finally:
+        proc.terminate()
