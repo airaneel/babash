@@ -276,15 +276,21 @@ def _fix_llm_bash_mistakes(data: dict[str, Any]) -> dict[str, Any]:
     action_type = data.get("type", "command")
 
     # Fix stringified arrays: "[3]" -> [3], "[\"Ctrl-c\"]" -> ["Ctrl-c"]
+    # Also wrap bare values: "Ctrl-c" -> ["Ctrl-c"], "3" -> [3]
     for field in ("send_specials", "send_ascii"):
         val = data.get(field)
-        if isinstance(val, str):
-            try:
-                parsed = _json.loads(val)
-                if isinstance(parsed, list):
-                    data = {**data, field: parsed}
-            except _json.JSONDecodeError:
-                pass
+        if not isinstance(val, str):
+            continue
+        try:
+            parsed = _json.loads(val)
+            if isinstance(parsed, list):
+                data = {**data, field: parsed}
+            elif isinstance(parsed, (int, float)):
+                data = {**data, field: [int(parsed)]}
+            else:
+                data = {**data, field: [str(parsed)]}
+        except _json.JSONDecodeError:
+            data = {**data, field: [val]}
 
     # Fix 'command' field used for non-command types
     cmd = data.get("command")
