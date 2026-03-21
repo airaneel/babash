@@ -467,7 +467,7 @@ async def check_status(
 
 
 @mcp.tool(
-    description="Send text input to a running interactive program.",
+    description="Send text input to a running program (passwords, prompts). For Enter/Ctrl-c use send_keys instead.",
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
@@ -484,14 +484,16 @@ async def send_input(
     app = get_app(ctx)
     ensure_init(app)
     shell = app.get_shell(session)
-    bash_cmd = BashCommand.model_validate(
-        {
-            "type": "send_text",
-            "send_text": text,
-            "bg_command_id": bg_command_id,
-            "thread_id": shell.current_thread_id,
-        }
-    )
+
+    if not text:
+        return "Error: text cannot be empty. Use send_keys('Enter') to press Enter, or send_keys('Ctrl-c') to interrupt."
+
+    bash_cmd = BashCommand.model_validate({
+        "type": "send_text",
+        "send_text": text,
+        "bg_command_id": bg_command_id,
+        "thread_id": shell.current_thread_id,
+    })
     output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
     shell.save_state_to_disk()
     return output

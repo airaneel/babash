@@ -222,6 +222,9 @@ def _execute_bash(
                 return error, 0.0
 
         elif isinstance(command_data, SendText):
+            if not command_data.send_text:
+                return "Failure: send_text cannot be empty. Use send_specials with Enter instead.", 0.0
+
             bash_state.console.print(f"Interact text: {command_data.send_text!r}")
             for i in range(0, len(command_data.send_text), 128):
                 bash_state.send(
