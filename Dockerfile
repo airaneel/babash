@@ -17,7 +17,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.12-slim-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends screen curl \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    screen curl \
+    openssh-client sshpass \
+    net-tools iputils-ping dnsutils traceroute \
+    wget jq \
+    git \
+    vim-tiny nano \
+    zip unzip tar gzip \
+    procps htop \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r app && useradd -r -g app app
