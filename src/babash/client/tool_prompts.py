@@ -34,17 +34,17 @@ TOOL_PROMPTS = [
         inputSchema=remove_titles_from_schema(BashCommand.model_json_schema()),
         name="BashCommand",
         description="""Execute shell commands or interact with running processes.
-- Set `type` to "command" and provide `command` to run a shell command.
-- Set `type` to "status_check" to check if a previous command is still running.
-- Set `type` to "send_text" to send text input to a running interactive program.
-- Set `type` to "send_specials" to send special keys like Enter, Ctrl-c, arrow keys.
-- Set `type` to "send_ascii" to send raw ASCII codes.
-- Set `thread_id` to the value returned by Initialize.
-- Set `is_background` to true to run a command in background (gets its own bg_command_id).
-- Set `bg_command_id` when interacting with a background command.
-- Only one foreground command runs at a time. Check status before running a new one.
-- Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
-- Do not send Ctrl-c without checking status first. Programs may still be running.
+IMPORTANT: Each `type` value has its own required field. Do NOT mix them.
+- type="command" → set `command` (string). Optionally set `is_background` for background execution.
+- type="status_check" → set `status_check` to true. No other fields needed.
+- type="send_text" → set `send_text` (string). Do NOT use `command` field.
+- type="send_specials" → set `send_specials` (array of keys like "Enter", "Ctrl-c", "Key-up").
+- type="send_ascii" → set `send_ascii` (array of integer ASCII codes).
+Always set `thread_id` to the value returned by Initialize.
+For background commands: set `is_background` to true with type="command".
+To interact with a background command: set `bg_command_id` on non-command types.
+Only one foreground command runs at a time. Check status before running a new one.
+Do not use echo/cat to read/write files — use ReadFiles/FileWriteOrEdit instead.
 """,
         annotations=ToolAnnotations(destructiveHint=True, openWorldHint=True),
     ),
