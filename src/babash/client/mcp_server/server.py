@@ -91,6 +91,24 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
 
 mcp = FastMCP(
     "babash",
+    instructions="""babash is a shell and coding agent MCP server.
+
+You have a persistent interactive terminal. Use RunCommand to execute shell commands.
+The shell is stateful — cd, environment variables, and running processes persist between calls.
+
+Key tools:
+- RunCommand: execute a shell command (set is_background=true for long-running ones)
+- CheckStatus: check if a command is still running, get latest output
+- SendInput: send text to a running interactive program (e.g. password prompts)
+- SendKeys: send special keys like Ctrl-c, Enter, arrow keys
+- ReadFiles: read file contents (supports line ranges like file.py:10-20)
+- FileWriteOrEdit: write or edit files using search/replace blocks
+- Initialize: (optional) set workspace path, mode, or resume a task
+
+Do not use echo/cat to read or write files — use ReadFiles and FileWriteOrEdit.
+Only one foreground command runs at a time. Use CheckStatus before running a new one.
+Use is_background=true for commands that run for a long time (servers, builds).
+""",
     lifespan=app_lifespan,
     host=os.getenv("BABASH_HOST", "127.0.0.1"),
     port=int(os.getenv("BABASH_PORT", "8000")),
