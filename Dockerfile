@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir --break-system-packages /app
 
 # === Config ===
 RUN mkdir -p /root/.ssh \
-    && printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > /root/.ssh/config \
+    && printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n  ControlMaster auto\n  ControlPath /tmp/ssh-%%r@%%h:%%p\n  ControlPersist 600\n' > /root/.ssh/config \
     && chmod 700 /root/.ssh && chmod 600 /root/.ssh/config
 
 RUN git config --global user.name "babash" \
