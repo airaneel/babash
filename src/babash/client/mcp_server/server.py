@@ -139,6 +139,9 @@ Do NOT use echo/cat/sed to read or write files — use the file tools instead.
 - cd, env vars, and state persist within each session independently.
 - If output is truncated, use more precise commands (grep, head, tail, awk) instead of dumping everything.
 - For large files, use read_files_tool with line ranges (file.py:1-50) instead of reading the whole file.
+- For SSH: open an interactive session with run_command("ssh user@host"), then run commands directly.
+  Do NOT use ssh user@host "cmd" repeatedly — it reconnects and re-authenticates every time.
+  Use a session for long SSH work: create_session("remote"), run_command("ssh user@host", session="remote").
 """,
     lifespan=app_lifespan,
     host=os.getenv("BABASH_HOST", "127.0.0.1"),
