@@ -477,15 +477,9 @@ async def check_status(
     last_outputs[sname] = output
 
     if not incremental.strip() or incremental == "(no new output)":
-        pending = shell.get_pending_for() if shell.state == "pending" else ""
         incremental = f"(no new output)\nstate: {shell.state}\nlast command: {shell.last_command or '(none)'}"
-        if pending and "seconds" in pending:
-            try:
-                secs = int(pending.split()[0])
-                if secs > 30:
-                    incremental += "\n\n💡 Command running >30s with no output. Consider: send_keys('Ctrl-c') and use a more targeted command."
-            except ValueError:
-                pass
+        if shell.state == "pending":
+            incremental += f"\nrunning for: {shell.get_pending_for()}"
 
     shell.save_state_to_disk()
     return incremental
