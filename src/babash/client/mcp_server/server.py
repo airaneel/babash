@@ -133,6 +133,9 @@ Do NOT use echo/cat/sed to read or write files — use the file tools instead.
 # Important
 - Each session runs one foreground command at a time.
 - If a command is still running, check_status or send_keys(Ctrl-c) before running another.
+- Do NOT poll check_status repeatedly waiting for a command to finish. If the command has no output
+  after one check, either send_keys(Ctrl-c) and try a different approach, or move on to other work
+  in a different session. Never call check_status more than 2-3 times for the same command.
 - cd, env vars, and state persist within each session independently.
 - If output is truncated, use more precise commands (grep, head, tail, awk) instead of dumping everything.
 - For large files, use read_files_tool with line ranges (file.py:1-50) instead of reading the whole file.
