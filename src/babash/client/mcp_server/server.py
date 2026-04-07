@@ -118,13 +118,10 @@ Use sessions when you need things running simultaneously:
 
 Use list_sessions() to see all sessions with their status and last command.
 
-# Background commands (within a session)
-For fire-and-forget commands within one session:
-- run_command(command="long-build", is_background=true) → returns bg_command_id
-- check_status(bg_command_id="...") → check progress
-
-Key difference: sessions are persistent independent shells. Background commands are
-one-off processes within a session.
+# Background commands
+run_command(command="npm start", is_background=true) auto-creates a session (e.g. "bg_a1b2c3").
+Use check_status(session="bg_a1b2c3") to monitor, send_keys("Ctrl-c", session="bg_a1b2c3") to stop.
+Background sessions appear in list_sessions() and can be destroyed with destroy_session().
 
 # File operations
 - read_files_tool(file_paths): read files. Supports line ranges: file.py:10-20
@@ -382,20 +379,38 @@ async def run_command(
     await ctx.info(f"$ {command}")
     await ctx.report_progress(0, 1, "executing...")
 
+    sname = session or "main"
+
+    # is_background → auto-create a session
+    if is_background:
+        import hashlib
+        bg_name = f"bg_{hashlib.md5(command.encode()).hexdigest()[:6]}"
+        if bg_name not in app.get_sessions():
+            cwd = shell.cwd
+            new_shell = BashState(
+                console=app.console, working_dir=cwd,
+                bash_command_mode=None, file_edit_mode=None,
+                write_if_empty_mode=None, mode=None,
+                use_screen=True, whitelist_for_overwrite=None,
+                thread_id=None, shell_path=_shell_path or None,
+            )
+            app.get_sessions()[bg_name] = new_shell
+        shell = app.get_sessions()[bg_name]
+        sname = bg_name
+
     # Busy check
-    if shell.state == "pending" and not is_background:
-        sname = session or "main"
+    if shell.state == "pending":
         return (
             f"Cannot run — session '{sname}' busy.\n"
             f"Running: {shell.last_command or 'unknown'} ({shell.get_pending_for()})\n"
-            f"Options: check_status(session='{sname}'), send_keys('Ctrl-c', session='{sname}'), or is_background=true"
+            f"Options: check_status(session='{sname}'), send_keys('Ctrl-c', session='{sname}'), or use a different session"
         )
 
     bash_cmd = BashCommand.model_validate(
         {
             "type": "command",
             "command": command,
-            "is_background": is_background,
+            "is_background": False,
             "wait_for_seconds": wait_for_seconds,
             "thread_id": shell.current_thread_id,
         }
@@ -407,7 +422,8 @@ async def run_command(
     if output.startswith(command.strip()):
         output = output[len(command.strip()) :]
 
-    sname = session or "main"
+    if is_background:
+        output = f"Running in session '{sname}'. Use check_status(session='{sname}') to monitor.\n{output}"
     app.get_last_outputs()[sname] = output
     record_command(app, command, output, sname)
 
@@ -436,7 +452,6 @@ async def run_command(
 )
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
-    bg_command_id: str | None = None,
     session: str | None = None,
     wait_for_seconds: float | None = None,
 ) -> str:
@@ -448,7 +463,6 @@ async def check_status(
         {
             "type": "status_check",
             "status_check": True,
-            "bg_command_id": bg_command_id,
             "wait_for_seconds": wait_for_seconds,
             "thread_id": shell.current_thread_id,
         }
@@ -481,7 +495,6 @@ async def check_status(
 async def send_input(
     ctx: McpContext,  # type: ignore[type-arg]
     text: str,
-    bg_command_id: str | None = None,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
@@ -494,7 +507,6 @@ async def send_input(
     bash_cmd = BashCommand.model_validate({
         "type": "send_text",
         "send_text": text,
-        "bg_command_id": bg_command_id,
         "thread_id": shell.current_thread_id,
     })
     output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
@@ -514,7 +526,6 @@ async def send_input(
 async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
     keys: list[str] | str = "Ctrl-c",
-    bg_command_id: str | None = None,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
@@ -525,7 +536,6 @@ async def send_keys(
         {
             "type": "send_specials",
             "send_specials": keys_list,
-            "bg_command_id": bg_command_id,
             "thread_id": shell.current_thread_id,
         }
     )
