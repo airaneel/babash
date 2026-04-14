@@ -1,5 +1,6 @@
 """babash MCP server — wiring only. All logic lives in helpers/state/tools."""
 
+import base64
 import logging
 import os
 import shlex
@@ -23,6 +24,7 @@ from ...types_ import (
     WriteIfEmpty,
 )
 from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
+from ..file_ops.search_replace import SEARCH_MARKER, search_replace_edit
 from ..tools import (
     Context,
     _handle_context_save,
@@ -38,7 +40,6 @@ from .helpers import (
     CODING_MAX_TOKENS,
     NONCODING_MAX_TOKENS,
     detect_errors,
-    get_incremental,
     record_command,
 )
 from .state import AppState, Console
@@ -99,8 +100,12 @@ mcp = FastMCP(
     instructions="""babash is a shell and coding agent MCP server with multiple persistent terminals.
 
 # Shell commands
-- run_command(command): execute a command and get output.
-- check_status(): check if the last command is still running.
+- run_command(command): execute a command and get output. Returns quickly. If the
+  command is still running you get a "pending" status — that's normal, use
+  check_status to poll or work in another session in the meantime.
+- check_status(wait_for_seconds=N): poll for new output. N is capped at 5s server-side.
+  For long-running commands (ansible, builds), call check_status repeatedly and read
+  incremental output, or do other work between checks — do NOT try to block on one call.
 - send_input(text): send text to a running interactive program (passwords, prompts).
 - send_keys(keys): send special keys — "Ctrl-c" to interrupt, "Enter" to confirm, arrow keys to navigate.
 
@@ -127,6 +132,11 @@ Background sessions appear in list_sessions() and can be destroyed with destroy_
 - read_files_tool(file_paths): read files. Supports line ranges: file.py:10-20
 - create_file(file_path, content): create a new file (fails if exists)
 - file_write_or_edit(file_path, percentage_to_change, text_or_search_replace_blocks): edit existing files
+
+All file tools accept session= to operate on files in a remote session (e.g. one running SSH):
+  read_files_tool(file_paths=["/etc/hosts"], session="myserver")
+  create_file(file_path="/tmp/test.txt", content="hello", session="myserver")
+  file_write_or_edit(file_path="/etc/config.yaml", ..., session="myserver")
 
 Do NOT use echo/cat/sed to read or write files — use the file tools instead.
 
@@ -184,6 +194,55 @@ def ensure_init(app: AppState) -> None:
 
 def make_context(app: AppState) -> Context:
     return Context(app.bash_state, app.console)
+
+
+def _exec_in_session(shell: BashState, command: str) -> str:
+    """Run a single-line command through a session shell and return output."""
+    bash_cmd = BashCommand.model_validate({
+        "type": "command",
+        "command": command,
+        "is_background": False,
+        "wait_for_seconds": None,
+        "thread_id": shell.current_thread_id,
+    })
+    output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
+    return output
+
+
+def _session_read_file(shell: BashState, path: str, session_name: str) -> str:
+    """Read a file through a session shell using cat -n."""
+    if shell.state == "pending":
+        return (
+            f"Error: session '{session_name}' is busy "
+            f"(running: {shell.last_command or 'unknown'}).\n"
+            f"Use check_status(session='{session_name}') or "
+            f"send_keys('Ctrl-c', session='{session_name}') first."
+        )
+    output = _exec_in_session(shell, f"cat -n {shlex.quote(path)}")
+    return output
+
+
+def _session_write_file(shell: BashState, path: str, content: str, session_name: str) -> str:
+    """Write a file through a session shell using base64."""
+    if shell.state == "pending":
+        return (
+            f"Error: session '{session_name}' is busy "
+            f"(running: {shell.last_command or 'unknown'}).\n"
+            f"Use check_status(session='{session_name}') or "
+            f"send_keys('Ctrl-c', session='{session_name}') first."
+        )
+    encoded = base64.b64encode(content.encode()).decode()
+    parent = os.path.dirname(path)
+    if parent:
+        _exec_in_session(shell, f"mkdir -p {shlex.quote(parent)}")
+    output = _exec_in_session(
+        shell,
+        f"printf '%s' '{encoded}' | base64 -d > {shlex.quote(path)}",
+    )
+    # Verify write
+    verify = _exec_in_session(shell, f"wc -c < {shlex.quote(path)}")
+    expected = len(content.encode())
+    return output or f"Success (wrote {expected} bytes to {path})\n{verify}"
 
 
 # --- Resources ---
@@ -337,7 +396,13 @@ async def babash_initialize(
 
 
 @mcp.tool(
-    description="Execute a shell command. Use session= for parallel execution.",
+    description=(
+        "Execute a shell command. Long commands return immediately with state=pending — "
+        "never use `sleep` to wait, call check_status instead. For parallel work use "
+        "session= (named) or is_background=True (auto-named bg_*). To create or edit "
+        "files prefer create_file / file_write_or_edit over `cat <<EOF` — they preserve "
+        "quoting and work for remote sessions."
+    ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
@@ -349,7 +414,6 @@ async def run_command(
     ctx: McpContext,  # type: ignore[type-arg]
     command: str,
     is_background: bool = False,
-    wait_for_seconds: float | None = None,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
@@ -401,25 +465,48 @@ async def run_command(
         shell = app.get_sessions()[bg_name]
         sname = bg_name
 
-    # Busy check
+    # Busy check: don't error — run a status check instead so the agent gets
+    # forward progress (incremental output + current state) instead of retrying
+    # the same command in a loop.
     if shell.state == "pending":
-        return (
-            f"Cannot run — session '{sname}' busy.\n"
-            f"Running: {shell.last_command or 'unknown'} ({shell.get_pending_for()})\n"
-            f"Options: check_status(session='{sname}'), send_keys('Ctrl-c', session='{sname}'), or use a different session"
+        status_cmd = BashCommand.model_validate({
+            "type": "status_check",
+            "status_check": True,
+            "wait_for_seconds": None,
+            "thread_id": shell.current_thread_id,
+        })
+        status_out, _ = execute_bash(
+            shell, default_enc, status_cmd, NONCODING_MAX_TOKENS, None
         )
+        new_text, _, _ = status_out.partition("\n\n---\n\n")
+        new_text = new_text.strip()
+        last = app.get_last_outputs().get(sname, "")
+        if last and new_text.startswith(last):
+            new_text = new_text[len(last):].lstrip()
+        app.get_last_outputs()[sname] = status_out
+        shell.save_state_to_disk()
+        header = (
+            f"Session '{sname}' is still running '{shell.last_command or 'unknown'}' "
+            f"for {shell.get_pending_for()}. Cannot start a new command until it "
+            f"finishes. Use send_keys('Ctrl-c', session='{sname}') to interrupt, "
+            f"check_status(session='{sname}') to wait, or create_session(name='other') "
+            f"to run in parallel."
+        )
+        if new_text:
+            return f"{header}\n\n--- new output ---\n{new_text}"
+        return f"{header}\n\n(no new output yet)"
 
     bash_cmd = BashCommand.model_validate(
         {
             "type": "command",
             "command": command,
             "is_background": False,
-            "wait_for_seconds": wait_for_seconds,
+            "wait_for_seconds": None,
             "thread_id": shell.current_thread_id,
         }
     )
     output, _ = execute_bash(
-        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
     )
 
     if output.startswith(command.strip()):
@@ -445,7 +532,11 @@ async def run_command(
 
 
 @mcp.tool(
-    description="Check command status. Returns new output since last check.",
+    description=(
+        "Check a running command's status and return new output since the last check. "
+        "Use this instead of `sleep` when waiting — pass wait_for_seconds to block up to "
+        "5s per call (hard cap); for longer waits, call again."
+    ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -462,30 +553,48 @@ async def check_status(
     ensure_init(app)
     shell = app.get_shell(session)
 
+    # Hard cap: never block a session for more than 5s on a single check.
+    # If the command needs longer, the agent calls check_status again.
+    capped_wait = (
+        min(float(wait_for_seconds), 5.0) if wait_for_seconds else None
+    )
     bash_cmd = BashCommand.model_validate(
         {
             "type": "status_check",
             "status_check": True,
-            "wait_for_seconds": wait_for_seconds,
+            "wait_for_seconds": capped_wait,
             "thread_id": shell.current_thread_id,
         }
     )
     output, _ = execute_bash(
-        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, wait_for_seconds
+        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, capped_wait
     )
+
+    # execute_bash returns "<new pending text>\n\n---\n\nstatus = ...\ncwd = ..."
+    # The "---" gets rendered as a markdown horizontal rule in the UI, hiding
+    # everything after. Split and format as a plain status line instead.
+    new_text, _, _ = output.partition("\n\n---\n\n")
+    new_text = new_text.strip()
 
     sname = session or "main"
     last_outputs = app.get_last_outputs()
-    incremental = get_incremental(output, last_outputs.get(sname, ""))
+    last = last_outputs.get(sname, "")
+    if last and new_text.startswith(last):
+        new_text = new_text[len(last):].lstrip()
     last_outputs[sname] = output
 
-    if not incremental.strip() or incremental == "(no new output)":
-        incremental = f"(no new output)\nstate: {shell.state}\nlast command: {shell.last_command or '(none)'}"
-        if shell.state == "pending":
-            incremental += f"\nrunning for: {shell.get_pending_for()}"
+    status_line = f"[state={shell.state} cwd={shell.cwd}"
+    if shell.state == "pending":
+        status_line += f" running={shell.last_command or '(unknown)'} for={shell.get_pending_for()}"
+    status_line += "]"
+
+    if new_text:
+        result = f"{new_text}\n\n{status_line}"
+    else:
+        result = f"(no new output) {status_line}"
 
     shell.save_state_to_disk()
-    return incremental
+    return result
 
 
 @mcp.tool(
@@ -520,7 +629,11 @@ async def send_input(
 
 
 @mcp.tool(
-    description="Send special keys. Use Ctrl-c to interrupt, arrow keys to navigate.",
+    description=(
+        "Send special keys. Use Ctrl-c to interrupt, arrow keys to navigate. "
+        "babash has no built-in command timeout and macOS has no `timeout` binary "
+        "without coreutils — if a run_command hangs, kill it with Ctrl-c here."
+    ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
@@ -638,7 +751,7 @@ async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[ty
 
 
 @mcp.tool(
-    description="Read file contents. Supports line ranges: file.py:10-20",
+    description="Read file contents. Supports line ranges: file.py:10-20. Use session= to read from a remote session (e.g. one running SSH).",
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -646,9 +759,37 @@ async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[ty
         openWorldHint=False,
     ),
 )
-async def read_files_tool(ctx: McpContext, file_paths: list[str]) -> str:  # type: ignore[type-arg]
+async def read_files_tool(ctx: McpContext, file_paths: list[str], session: str | None = None) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
     ensure_init(app)
+
+    if session:
+        shell = app.get_shell(session)
+        if shell.state == "pending":
+            return (
+                f"Error: session '{session}' is busy "
+                f"(running: {shell.last_command or 'unknown'}).\n"
+                f"Use check_status(session='{session}') or "
+                f"send_keys('Ctrl-c', session='{session}') first."
+            )
+        rf = ReadFiles(file_paths=file_paths)
+        message = ""
+        for i, path in enumerate(rf.file_paths):
+            start = rf.start_line_nums[i]
+            end = rf.end_line_nums[i]
+            if start is not None or end is not None:
+                s = start or 1
+                e_cond = f" && NR<={end}" if end else ""
+                cmd = f"awk 'NR>={s}{e_cond} {{printf \"%d %s\\n\", NR, $0}}' {shlex.quote(path)}"
+            else:
+                cmd = f"awk '{{printf \"%d %s\\n\", NR, $0}}' {shlex.quote(path)}"
+            output = _exec_in_session(shell, cmd)
+            range_str = ""
+            if start or end:
+                range_str = f":{start or ''}-{end or ''}"
+            message += f'\n<file-contents-numbered path="{path}{range_str}">\n{output}\n</file-contents-numbered>'
+        return message or "(no files)"
+
     rf = ReadFiles(file_paths=file_paths)
     result, file_ranges, _ = read_files(
         rf.file_paths,
@@ -681,7 +822,11 @@ async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[ty
 
 
 @mcp.tool(
-    description="Create a new file. Fails if file exists.",
+    description=(
+        "Create a new file. Fails if file exists. Prefer this over `cat <<EOF` in "
+        "run_command — content is transferred without shell quoting, so YAML/Jinja/"
+        "quotes survive verbatim. Pass session= to write into a remote SSH session."
+    ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
@@ -689,9 +834,18 @@ async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[ty
         openWorldHint=False,
     ),
 )
-async def create_file(ctx: McpContext, file_path: str, content: str) -> str:  # type: ignore[type-arg]
+async def create_file(ctx: McpContext, file_path: str, content: str, session: str | None = None) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
     ensure_init(app)
+
+    if session:
+        shell = app.get_shell(session)
+        # Check if file exists
+        check = _exec_in_session(shell, f"test -f {shlex.quote(file_path)} && echo EXISTS || echo NO")
+        if "EXISTS" in check:
+            return f"Error: file {file_path} already exists."
+        return _session_write_file(shell, file_path, content, session)
+
     wf = WriteIfEmpty(file_path=file_path, file_content=content)
     result, paths = write_file(
         wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app)
@@ -707,7 +861,12 @@ with open(os.path.join(os.path.dirname(__file__), "..", "diff-instructions.txt")
 
 
 @mcp.tool(
-    description="Edit an existing file.\n" + _diff_instructions,
+    description=(
+        "Edit an existing file (or write it whole). Prefer this over `cat <<EOF` / "
+        "`sed` / `echo >>` in run_command — content is transferred without shell "
+        "quoting, so YAML/Jinja/quotes survive verbatim. Pass session= to edit "
+        "inside a remote SSH session.\n"
+    ) + _diff_instructions,
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
@@ -720,9 +879,36 @@ async def file_write_or_edit(
     file_path: str,
     percentage_to_change: int,
     text_or_search_replace_blocks: str,
+    session: str | None = None,
 ) -> str:
     app = get_app(ctx)
     ensure_init(app)
+
+    if session:
+        shell = app.get_shell(session)
+        if shell.state == "pending":
+            return (
+                f"Error: session '{session}' is busy "
+                f"(running: {shell.last_command or 'unknown'})."
+            )
+        content = text_or_search_replace_blocks.strip()
+        edit_lines = content.split("\n")
+        is_edit = bool(SEARCH_MARKER.match(edit_lines[0])) or (0 < percentage_to_change <= 50)
+
+        if is_edit:
+            # Read current file, apply search-replace, write back
+            raw = _exec_in_session(shell, f"cat {shlex.quote(file_path)}")
+            if not raw.strip():
+                check = _exec_in_session(shell, f"test -f {shlex.quote(file_path)} && echo EXISTS || echo NO")
+                if "NO" in check:
+                    return f"Error: file {file_path} does not exist"
+            new_content, comments = search_replace_edit(edit_lines, raw, app.console.log)
+            result = _session_write_file(shell, file_path, new_content, session)
+            return f"{comments}\n{result}" if comments else result
+        else:
+            # Full write
+            return _session_write_file(shell, file_path, content, session)
+
     fwe = FileWriteOrEdit(
         file_path=file_path,
         percentage_to_change=percentage_to_change,
