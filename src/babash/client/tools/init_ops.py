@@ -347,6 +347,8 @@ def try_open_file(file_path: str) -> None:
                 continue
     if open_cmd:
         try:
-            subprocess.run([open_cmd, file_path], timeout=2)
+            # capture_output so the opener can't print onto our stdout
+            # (the MCP JSON-RPC channel).
+            subprocess.run([open_cmd, file_path], timeout=2, capture_output=True)
         except Exception:
             pass

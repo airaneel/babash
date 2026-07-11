@@ -157,9 +157,12 @@ def cleanup_orphaned_babash_screens(console: Console) -> None:
 
     for session in orphaned_sessions:
         try:
+            # capture_output keeps screen's diagnostics off our stdout —
+            # this is the MCP JSON-RPC channel and any stray line corrupts it.
             subprocess.run(
                 ["screen", "-S", session, "-X", "quit"],
                 check=False,
+                capture_output=True,
                 timeout=CONFIG.timeout,
             )
         except Exception as e:
@@ -198,9 +201,11 @@ def cleanup_all_screens_with_name(name: str, console: Console) -> None:
 
     for session in sessions_to_kill:
         try:
+            # capture_output: same stdout-hygiene reason as above.
             subprocess.run(
                 ["screen", "-S", session, "-X", "quit"],
                 check=True,
+                capture_output=True,
                 timeout=CONFIG.timeout,
             )
         except Exception as e:

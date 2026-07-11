@@ -280,36 +280,48 @@ def _execute_bash(
         bash_state.expect(bash_state.prompt)
         return "---\n\nFailure: user interrupted the execution", 0.0
 
-    wait = min(timeout_s or CONFIG.timeout, CONFIG.timeout_while_output)
-    index = bash_state.expect([bash_state.prompt, pexpect.TIMEOUT], timeout=wait)
+    # run_command: always use the short default timeout. Commands that finish
+    # quickly (most of them) return immediately; anything still running returns
+    # "pending" so the agent can decide what to do next.
+    # check_status: honor wait_for_seconds as the full budget, using
+    # timeout_while_output only as the size of each polling slice with
+    # patience-based early exit on stalled output.
+    is_sc = is_status_check(bash_arg)
+    if is_sc:
+        total_budget = float(timeout_s) if timeout_s else CONFIG.timeout
+    else:
+        total_budget = CONFIG.timeout
+    slice_wait = min(total_budget, CONFIG.timeout_while_output)
+    index = bash_state.expect(
+        [bash_state.prompt, pexpect.TIMEOUT], timeout=slice_wait
+    )
     if index == 1:
         text = bash_state.before or ""
         incremental_text = _incremental_text(text, bash_state.pending_output)
 
         second_wait_success = False
-        if is_status_check(bash_arg):
-            remaining = CONFIG.timeout_while_output - wait
+        remaining = total_budget - slice_wait
+        if is_sc and remaining > 0:
             patience = CONFIG.output_wait_patience
             if not incremental_text:
                 patience -= 1
             itext = incremental_text
             while remaining > 0 and patience > 0:
+                this_wait = min(remaining, CONFIG.timeout_while_output)
                 index = bash_state.expect(
-                    [bash_state.prompt, pexpect.TIMEOUT], timeout=wait
+                    [bash_state.prompt, pexpect.TIMEOUT], timeout=this_wait
                 )
                 if index == 0:
                     second_wait_success = True
                     break
+                _itext = bash_state.before or ""
+                _itext = _incremental_text(_itext, bash_state.pending_output)
+                if _itext != itext:
+                    patience = CONFIG.output_wait_patience
                 else:
-                    _itext = bash_state.before or ""
-                    _itext = _incremental_text(_itext, bash_state.pending_output)
-                    if _itext != itext:
-                        patience = 3
-                    else:
-                        patience -= 1
-                    itext = _itext
-
-                remaining = remaining - wait
+                    patience -= 1
+                itext = _itext
+                remaining = remaining - this_wait
 
             if not second_wait_success:
                 text = bash_state.before or ""
