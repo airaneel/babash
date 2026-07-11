@@ -1,5 +1,6 @@
 """babash MCP server — wiring only. All logic lives in helpers/state/tools."""
 
+import anyio
 import base64
 import logging
 import os
@@ -103,9 +104,9 @@ mcp = FastMCP(
 - run_command(command): execute a command and get output. Returns quickly. If the
   command is still running you get a "pending" status — that's normal, use
   check_status to poll or work in another session in the meantime.
-- check_status(wait_for_seconds=N): poll for new output. N is capped at 5s server-side.
-  For long-running commands (ansible, builds), call check_status repeatedly and read
-  incremental output, or do other work between checks — do NOT try to block on one call.
+- check_status(wait_for_seconds=N): get new output since the last check. N is capped at 5s server-side.
+  For long-running commands (ansible, builds), space out your checks — read the incremental
+  output each time and do other work in between. Don't call it in a tight loop expecting it to block.
 - send_input(text): send text to a running interactive program (passwords, prompts).
 - send_keys(keys): send special keys — "Ctrl-c" to interrupt, "Enter" to confirm, arrow keys to navigate.
 
@@ -401,7 +402,9 @@ async def babash_initialize(
         "never use `sleep` to wait, call check_status instead. For parallel work use "
         "session= (named) or is_background=True (auto-named bg_*). To create or edit "
         "files prefer create_file / file_write_or_edit over `cat <<EOF` — they preserve "
-        "quoting and work for remote sessions."
+        "quoting and work for remote sessions. Multi-line commands run in a subshell, so "
+        "cd/exports inside them do NOT persist to the session — use single-line commands "
+        "to change session state."
     ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -420,24 +423,10 @@ async def run_command(
     ensure_init(app)
     shell = app.get_shell(session)
 
-    # Dangerous command elicitation
-    dangerous = ["rm -rf", "rm -r /", "mkfs", "dd if=", "> /dev/", ":(){ :|:& };:"]
-    if any(p in command for p in dangerous):
-        try:
-            from pydantic import BaseModel as _BM
-
-            class Confirm(_BM):
-                proceed: bool = False
-
-            from mcp.server.elicitation import AcceptedElicitation
-
-            result = await ctx.elicit(
-                f"⚠️ Dangerous command: `{command}`\nProceed?", Confirm
-            )
-            if not isinstance(result, AcceptedElicitation) or not result.data.proceed:
-                return "Command cancelled by user."
-        except Exception:
-            pass
+    # No in-server destructive-command gate: this client (Claude Desktop)
+    # doesn't support MCP elicitation, so any prompt here would silently
+    # no-op and give a false sense of safety. Destructive actions are gated
+    # by the host agent's own guardrails instead.
 
     # Multi-line → bash -c
     if "\n" in command.strip():
@@ -451,7 +440,10 @@ async def run_command(
     # is_background → auto-create a session
     if is_background:
         import hashlib
-        bg_name = f"bg_{hashlib.md5(command.encode()).hexdigest()[:6]}"
+
+        # Key on cwd+command so the same command in two dirs gets two sessions.
+        bg_key = f"{shell.cwd}\0{command}"
+        bg_name = f"bg_{hashlib.md5(bg_key.encode()).hexdigest()[:6]}"
         if bg_name not in app.get_sessions():
             cwd = shell.cwd
             new_shell = BashState(
@@ -475,8 +467,8 @@ async def run_command(
             "wait_for_seconds": None,
             "thread_id": shell.current_thread_id,
         })
-        status_out, _ = execute_bash(
-            shell, default_enc, status_cmd, NONCODING_MAX_TOKENS, None
+        status_out, _ = await anyio.to_thread.run_sync(
+            execute_bash, shell, default_enc, status_cmd, NONCODING_MAX_TOKENS, None
         )
         new_text, _, _ = status_out.partition("\n\n---\n\n")
         new_text = new_text.strip()
@@ -505,8 +497,8 @@ async def run_command(
             "thread_id": shell.current_thread_id,
         }
     )
-    output, _ = execute_bash(
-        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
+    output, _ = await anyio.to_thread.run_sync(
+        execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
     )
 
     if output.startswith(command.strip()):
@@ -566,8 +558,8 @@ async def check_status(
             "thread_id": shell.current_thread_id,
         }
     )
-    output, _ = execute_bash(
-        shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, capped_wait
+    output, _ = await anyio.to_thread.run_sync(
+        execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, capped_wait
     )
 
     # execute_bash returns "<new pending text>\n\n---\n\nstatus = ...\ncwd = ..."
@@ -623,7 +615,9 @@ async def send_input(
         "send_text": text,
         "thread_id": shell.current_thread_id,
     })
-    output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
+    output, _ = await anyio.to_thread.run_sync(
+        execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
+    )
     shell.save_state_to_disk()
     return output
 
@@ -657,7 +651,9 @@ async def send_keys(
             "thread_id": shell.current_thread_id,
         }
     )
-    output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
+    output, _ = await anyio.to_thread.run_sync(
+        execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
+    )
     shell.save_state_to_disk()
     return output
 
