@@ -54,6 +54,28 @@ def _session() -> tuple[subprocess.Popen[str], SendFn, RecvFn, dict[str, Any]]:
     return proc, send, recv, init_result
 
 
+def _call(send: SendFn, recv: RecvFn, name: str, arguments: dict[str, Any], req_id: int) -> dict[str, Any]:
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+    )
+    return recv()
+
+
+def _init_chat(send: SendFn, recv: RecvFn, req_id: int) -> str:
+    """Call babash_initialize and return the assigned chat_id."""
+    r = _call(send, recv, "babash_initialize", {"type": "first_call"}, req_id)
+    text: str = r["result"]["content"][0]["text"]
+    for line in text.splitlines():
+        if line.startswith("Your chat_id is:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError("no chat_id in init output:\n" + text)
+
+
 def test_server_init() -> None:
     proc, send, recv, init_result = _session()
     try:
@@ -98,18 +120,8 @@ def test_list_prompts() -> None:
 def test_run_command() -> None:
     proc, send, recv, _ = _session()
     try:
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "run_command",
-                    "arguments": {"command": "echo mcp-test-pass"},
-                },
-            }
-        )
-        r = recv()
+        cid = _init_chat(send, recv, 1)
+        r = _call(send, recv, "run_command", {"command": "echo mcp-test-pass", "chat_id": cid}, 2)
         text = r["result"]["content"][0]["text"]
         assert "mcp-test-pass" in text
     finally:
@@ -119,18 +131,8 @@ def test_run_command() -> None:
 def test_check_status() -> None:
     proc, send, recv, _ = _session()
     try:
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "check_status",
-                    "arguments": {},
-                },
-            }
-        )
-        r = recv()
+        cid = _init_chat(send, recv, 1)
+        r = _call(send, recv, "check_status", {"chat_id": cid}, 2)
         assert "result" in r
     finally:
         proc.terminate()
@@ -139,41 +141,25 @@ def test_check_status() -> None:
 def test_babash_initialize() -> None:
     proc, send, recv, _ = _session()
     try:
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "babash_initialize",
-                    "arguments": {"type": "first_call"},
-                },
-            }
-        )
-        r = recv()
+        r = _call(send, recv, "babash_initialize", {"type": "first_call"}, 1)
         text = r["result"]["content"][0]["text"]
         assert "Initialize call done" in text
+        assert "Your chat_id is:" in text
     finally:
         proc.terminate()
 
 
-def test_auto_init_on_run_command() -> None:
-    """RunCommand should work without explicit Initialize."""
+def test_run_command_requires_chat_id() -> None:
+    """Isolation contract: an unknown chat_id is rejected (no silent shared
+    shell), and the chat_id returned by babash_initialize works."""
     proc, send, recv, _ = _session()
     try:
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "run_command",
-                    "arguments": {"command": "echo auto-init"},
-                },
-            }
-        )
-        r = recv()
+        r = _call(send, recv, "run_command", {"command": "echo hi", "chat_id": "does-not-exist"}, 1)
         text = r["result"]["content"][0]["text"]
-        assert "auto-init" in text
+        assert "unknown chat_id" in text
+
+        cid = _init_chat(send, recv, 2)
+        r2 = _call(send, recv, "run_command", {"command": "echo ok-isolated", "chat_id": cid}, 3)
+        assert "ok-isolated" in r2["result"]["content"][0]["text"]
     finally:
         proc.terminate()

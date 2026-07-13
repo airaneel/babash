@@ -1,7 +1,7 @@
 import json
 import os
-import random
 from typing import Any, Optional
+from uuid import uuid4
 
 
 def get_bash_state_dir_xdg() -> str:
@@ -13,8 +13,16 @@ def get_bash_state_dir_xdg() -> str:
 
 
 def generate_thread_id() -> str:
-    """Generate a random 4-digit thread_id."""
-    return f"i{random.randint(1000, 9999)}"
+    """Generate a collision-free thread_id.
+
+    Used as the on-disk state-file key ({thread_id}_bash_state.json) and screen
+    identity for every BashState. A 4-digit random id (the old scheme) collides
+    under concurrency — two shells started at once could share a state file and
+    clobber each other. A uuid removes that: distinct shells are always distinct
+    on disk, which is what keeps per-chat isolation from leaking through the
+    filesystem.
+    """
+    return f"i{uuid4().hex[:12]}"
 
 
 def save_bash_state_by_id(thread_id: str, bash_state_dict: dict[str, Any]) -> None:

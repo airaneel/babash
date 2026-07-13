@@ -2,10 +2,7 @@
 
 import os
 
-from mcp.server.fastmcp import Context as McpContext
-
-from ..tools import Context, initialize
-from .state import AppState, CommandRecord
+from .state import ChatWorkspace, CommandRecord
 
 CODING_MAX_TOKENS = int(os.getenv("BABASH_CODING_MAX_TOKENS", "32000"))
 NONCODING_MAX_TOKENS = int(os.getenv("BABASH_NONCODING_MAX_TOKENS", "16000"))
@@ -51,44 +48,13 @@ def get_incremental(full_output: str, last_output: str) -> str:
     return full_output
 
 
-def record_command(app: AppState, command: str, output: str, session: str) -> None:
-    """Record command to history with error detection."""
+def record_command(chat: ChatWorkspace, command: str, output: str, session: str) -> None:
+    """Record command to a chat's history with error detection."""
     errors = detect_errors(output)
     record = CommandRecord(
         command=command, output=output[:500], session=session,
         success=not bool(errors), errors=errors,
     )
-    history = app.get_history()
-    history.append(record)
-    if len(history) > 50:
-        app.history = history[-50:]
-
-
-def get_app(ctx: McpContext) -> AppState:  # type: ignore[type-arg]
-    """Get AppState from MCP context and auto-initialize."""
-    state = ctx.request_context.lifespan_context
-    if not isinstance(state, AppState):
-        raise RuntimeError("Server not initialized")
-    if not state.initialized:
-        state.initialized = True
-        initialize("first_call", Context(state.bash_state, state.console),
-                   "", [], "", CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, "babash", "")
-    return state
-
-
-def get_app_from_request() -> AppState:
-    """Get AppState from request context (for resources). Auto-initializes."""
-    from mcp.server.lowlevel.server import request_ctx
-    state = request_ctx.get().lifespan_context
-    if not isinstance(state, AppState):
-        raise RuntimeError("Server not initialized")
-    if not state.initialized:
-        state.initialized = True
-        initialize("first_call", Context(state.bash_state, state.console),
-                   "", [], "", CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, "babash", "")
-    return state
-
-
-def ctx(app: AppState) -> Context:
-    """Create tools Context from AppState."""
-    return Context(app.bash_state, app.console)
+    chat.history.append(record)
+    if len(chat.history) > 50:
+        del chat.history[:-50]

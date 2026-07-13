@@ -285,6 +285,7 @@ def start_shell(
     console: Console,
     over_screen: bool,
     shell_path: str,
+    unique_id: str,
 ) -> tuple["pexpect.spawn[str]", str]:
     cmd = shell_path
     if is_restricted_mode and cmd.split("/")[-1] == "bash":
@@ -330,10 +331,14 @@ def start_shell(
     initialdir_hash = md5(
         os.path.normpath(os.path.abspath(initial_dir)).encode()
     ).hexdigest()[:5]
+    # unique_id (the owning BashState's thread_id) guarantees a distinct screen
+    # name per shell. Without it the name is just timestamp(second)+dir, so two
+    # shells started in the same directory within the same second collide.
     shellid = shlex.quote(
         "babash."
         + time.strftime("%d-%Hh%Mm%Ss")
         + f".{initialdir_hash[:3]}."
+        + f"{unique_id}."
         + os.path.basename(initial_dir)
     )
     if over_screen:
@@ -345,6 +350,20 @@ def start_shell(
                 break
         shell.sendline(f"screen -q -S {shellid} {shell_path}")
         shell.expect(PROMPT_CONST, timeout=CONFIG.timeout)
+
+    # Sync to a clean prompt before handing the shell back. A freshly started
+    # shell (especially the inner shell screen spawns) briefly emits its own
+    # default prompt banner — e.g. `bash-3.2$` on macOS — before PROMPT_COMMAND
+    # installs the babash prompt. If that leftover text is still buffered, the
+    # very first real command matches it instead of its own output and comes
+    # back empty. Send a blank line and drain every prompt (in short slices, so
+    # a missed prompt costs 0.3s, not the full CONFIG.timeout) until the buffer
+    # goes quiet — the blank-line prompt match consumes the banner before it.
+    # (Mirrors pexpect.pxssh.sync_original_prompt.)
+    shell.sendline("")
+    for _ in range(20):
+        if shell.expect([PROMPT_CONST, pexpect.TIMEOUT], timeout=0.3) == 1:
+            break
 
     return shell, shellid
 
