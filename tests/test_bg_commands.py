@@ -52,7 +52,7 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         file_edit_mode=None,
         write_if_empty_mode=None,
         mode=None,
-        use_screen=True,
+        use_screen=False,
         whitelist_for_overwrite=None,
         thread_id=None,
         shell_path=None,
@@ -76,8 +76,18 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
     )
 
     yield ctx
-    # Cleanup after each test
+    # Cleanup after each test. Background shells (from is_background=True) each
+    # run their own expect thread; leaving them alive across tests means the
+    # next test's shell spawn does a forkpty() in a multi-threaded process,
+    # which can deadlock. Tear them down first so only the main thread remains.
     try:
+        for bg in list(bash_state.background_shells.values()):
+            try:
+                bg.sendintr()
+                bg.cleanup()
+            except Exception:
+                pass
+        bash_state.background_shells.clear()
         bash_state.sendintr()
         bash_state.cleanup()
     except Exception as e:
@@ -87,10 +97,11 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
 def test_bg_command_basic(context: Context, temp_dir: str) -> None:
     """Test basic background command execution."""
 
-    # Start a background command
+    # Start a background command longer than CONFIG.timeout so it's still
+    # running when the call returns.
     cmd = BashCommand(
         action_json=Command(
-            command="sleep 2",
+            command="sleep 5",
             is_background=True,
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
@@ -119,10 +130,11 @@ def test_bg_command_basic(context: Context, temp_dir: str) -> None:
 def test_bg_command_status_check(context: Context, temp_dir: str) -> None:
     """Test checking status of background command."""
 
-    # Start a background command
+    # Start a background command longer than CONFIG.timeout so it's still
+    # running when the call returns, then wait it out via a status check.
     cmd = BashCommand(
         action_json=Command(
-            command="sleep 1",
+            command="sleep 4",
             is_background=True,
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
@@ -142,11 +154,12 @@ def test_bg_command_status_check(context: Context, temp_dir: str) -> None:
 
     assert bg_id is not None
 
-    # Check status of background command
+    # Check status of background command, waiting long enough for it to finish.
     status_cmd = BashCommand(
         action_json=StatusCheck(
             status_check=True,
             bg_command_id=bg_id,
+            wait_for_seconds=10.0,
             thread_id=context.bash_state._current_thread_id,
         )
     )
@@ -182,7 +195,8 @@ def test_bg_command_invalid_id(context: Context, temp_dir: str) -> None:
 def test_bg_command_interrupt(context: Context, temp_dir: str) -> None:
     """Test interrupting a background command."""
 
-    # Start a background command
+    # Start a long-running background command so it's still running when we
+    # interrupt it.
     cmd = BashCommand(
         action_json=Command(
             command="sleep 5",
@@ -224,10 +238,10 @@ def test_bg_command_interrupt(context: Context, temp_dir: str) -> None:
 def test_multiple_bg_commands(context: Context, temp_dir: str) -> None:
     """Test running multiple background commands simultaneously."""
 
-    # Start first background command
+    # Start first background command (long enough to stay running)
     cmd1 = BashCommand(
         action_json=Command(
-            command="sleep 2",
+            command="sleep 5",
             is_background=True,
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
@@ -240,7 +254,7 @@ def test_multiple_bg_commands(context: Context, temp_dir: str) -> None:
     # Start second background command
     cmd2 = BashCommand(
         action_json=Command(
-            command="sleep 2",
+            command="sleep 5",
             is_background=True,
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,

@@ -32,7 +32,6 @@ from ..tools import (
     _handle_initialize,
     default_enc,
     file_writing,
-    initialize,
     read_files,
     read_image_from_shell,
 )
@@ -43,7 +42,7 @@ from .helpers import (
     detect_errors,
     record_command,
 )
-from .state import AppState, Console
+from .state import AppState, ChatWorkspace, Console
 
 logging.basicConfig(
     level=logging.DEBUG if os.getenv("BABASH_DEBUG") else logging.INFO,
@@ -65,33 +64,23 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
     )
     console = Console()
     tmp_dir = get_tmpdir()
+    console.log("babash version: " + str(metadata.version("babash")))
 
-    with BashState(
+    # No shell is created up front: every shell belongs to a chat_id and is
+    # spawned lazily by babash_initialize. This keeps chats isolated — one
+    # process, but each conversation gets its own independent workspace.
+    app = AppState(
+        custom_instructions=os.getenv("BABASH_SERVER_INSTRUCTIONS"),
         console=console,
-        working_dir=os.path.join(tmp_dir, "claude_playground"),
-        bash_command_mode=None,
-        file_edit_mode=None,
-        write_if_empty_mode=None,
-        mode=None,
-        use_screen=True,
-        whitelist_for_overwrite=None,
-        thread_id=None,
+        base_working_dir=os.path.join(tmp_dir, "claude_playground"),
         shell_path=_shell_path or None,
-    ) as bash_state:
-        console.log("babash version: " + str(metadata.version("babash")))
-        app = AppState(
-            bash_state=bash_state,
-            custom_instructions=os.getenv("BABASH_SERVER_INSTRUCTIONS"),
-            console=console,
-        )
-        try:
-            yield app
-        finally:
-            for name, shell in app.get_sessions().items():
-                try:
-                    shell.cleanup()
-                except Exception:
-                    pass
+        chats={},
+    )
+    try:
+        yield app
+    finally:
+        for chat in app.chats.values():
+            chat.cleanup()
 
 
 # --- FastMCP instance ---
@@ -99,6 +88,17 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
 mcp = FastMCP(
     "babash",
     instructions="""babash is a shell and coding agent MCP server with multiple persistent terminals.
+
+# chat_id — REQUIRED, read first
+One babash server is shared by many conversations. To keep your shell isolated
+from other chats you MUST:
+1. Call babash_initialize once at the very start of the conversation. It returns
+   a chat_id.
+2. Pass that same chat_id to EVERY babash tool call for the rest of the
+   conversation (run_command, check_status, send_keys, create_file, … all of them).
+Calls with an unknown/missing chat_id are rejected — they do not fall back to a
+shared shell. Your chat_id maps to your own "main" shell plus your own named
+sessions; other chats cannot see or disturb them.
 
 # Shell commands
 - run_command(command): execute a command and get output. Returns quickly. If the
@@ -176,25 +176,46 @@ def get_app_from_request() -> AppState:
     return state
 
 
-def ensure_init(app: AppState) -> None:
-    if app.initialized:
-        return
-    app.initialized = True
-    initialize(
-        "first_call",
-        Context(app.bash_state, app.console),
-        "",
-        [],
-        "",
-        CODING_MAX_TOKENS,
-        NONCODING_MAX_TOKENS,
-        "babash",
-        "",
+def _new_chat_id() -> str:
+    from uuid import uuid4
+
+    return uuid4().hex[:12]
+
+
+def _resolve_chat(app: AppState, chat_id: str) -> tuple[ChatWorkspace | None, str]:
+    """Look up a chat's workspace, or return a message telling the model how to
+    get a valid chat_id. Isolation depends on the model passing the chat_id it
+    was handed by babash_initialize, so an unknown id is a usage error, not a
+    reason to silently share another chat's shell."""
+    chat = app.get_chat(chat_id)
+    if chat is not None:
+        return chat, ""
+    known = ", ".join(app.chats.keys()) or "(none yet)"
+    return None, (
+        f"Error: unknown chat_id '{chat_id}'. Call babash_initialize once at the "
+        f"start of this conversation to get your chat_id, then pass that same "
+        f"chat_id to every babash tool call so your shell stays isolated from "
+        f"other chats. Known chat_ids: {known}."
     )
 
 
-def make_context(app: AppState) -> Context:
-    return Context(app.bash_state, app.console)
+def make_context(app: AppState, chat: ChatWorkspace) -> Context:
+    return Context(chat.main, app.console)
+
+
+def _roster_footer(chat: ChatWorkspace) -> str:
+    """Full session roster for this chat, appended to shell-tool responses so the
+    agent always sees which shells it has open and which are busy."""
+
+    def fmt(name: str, sh: BashState) -> str:
+        if sh.state == "pending":
+            return f"  {name}: running '{sh.last_command or '?'}' for {sh.get_pending_for()} (cwd={sh.cwd})"
+        return f"  {name}: idle (cwd={sh.cwd})"
+
+    lines = [f"[chat {chat.chat_id}] sessions:", fmt("main", chat.main)]
+    for name, sh in chat.sessions.items():
+        lines.append(fmt(name, sh))
+    return "\n".join(lines)
 
 
 def _exec_in_session(shell: BashState, command: str) -> str:
@@ -246,21 +267,39 @@ def _session_write_file(shell: BashState, path: str, content: str, session_name:
     return output or f"Success (wrote {expected} bytes to {path})\n{verify}"
 
 
+async def _warmup_shell(shell: BashState) -> None:
+    """Absorb a freshly spawned shell's startup prompt banner so the caller's
+    first *real* command isn't swallowed. A new pty emits a startup prompt that
+    the first execute_bash would otherwise capture instead of the command's
+    output. Running one throwaway command consumes it. Cheap, best-effort. With
+    per-chat isolation every chat spawns its own shell, so without this each
+    chat's first command would come back empty."""
+    try:
+        await anyio.to_thread.run_sync(_exec_in_session, shell, "true")
+    except Exception:
+        pass
+
+
 # --- Resources ---
 
 
 @mcp.resource("babash://workspace/tree", description="Current workspace directory tree")
 def workspace_tree() -> str:
     app = get_app_from_request()
-    ensure_init(app)
-    workspace = app.bash_state.workspace_root or app.bash_state.cwd
-    try:
-        from ..repo_ops.repo_context import get_repo_context
+    chats = list(app.chats.values())
+    if not chats:
+        return f"Workspace: {app.base_working_dir}\n(no chats initialized yet)"
+    from ..repo_ops.repo_context import get_repo_context
 
-        tree, _ = get_repo_context(workspace)
-        return f"Workspace: {workspace}\n\n{tree}"
-    except Exception:
-        return f"Workspace: {workspace}\n(unable to generate tree)"
+    blocks: list[str] = []
+    for chat in chats:
+        workspace = chat.main.workspace_root or chat.main.cwd
+        try:
+            tree, _ = get_repo_context(workspace)
+            blocks.append(f"[chat {chat.chat_id}] Workspace: {workspace}\n\n{tree}")
+        except Exception:
+            blocks.append(f"[chat {chat.chat_id}] Workspace: {workspace}\n(unable to generate tree)")
+    return "\n\n---\n\n".join(blocks)
 
 
 @mcp.resource("babash://workspace/env", description="Shell environment and system info")
@@ -269,16 +308,17 @@ def workspace_env() -> str:
     import shutil
 
     app = get_app_from_request()
-    ensure_init(app)
-    bs = app.bash_state
     lines = [
         f"system: {platform.system()} {platform.release()}",
         f"machine: {platform.machine()}",
-        f"shell_cwd: {bs.cwd}",
-        f"workspace_root: {bs.workspace_root}",
-        f"mode: {bs.mode}",
-        f"state: {bs.state}",
+        f"active_chats: {len(app.chats)}",
     ]
+    for chat in app.chats.values():
+        bs = chat.main
+        lines.append(
+            f"chat {chat.chat_id}: cwd={bs.cwd} workspace_root={bs.workspace_root} "
+            f"mode={bs.mode} state={bs.state}"
+        )
     for tool in [
         "git",
         "docker",
@@ -299,20 +339,24 @@ def workspace_env() -> str:
 
 
 @mcp.resource(
-    "babash://workspace/processes", description="All sessions and running commands"
+    "babash://workspace/processes", description="All chats, sessions and running commands"
 )
 def workspace_processes() -> str:
     app = get_app_from_request()
-    ensure_init(app)
-    lines = [
-        f"main: cwd={app.bash_state.cwd} state={app.bash_state.state} cmd={app.bash_state.last_command or '(idle)'}"
-    ]
-    for name, shell in app.get_sessions().items():
+    if not app.chats:
+        return "(no chats initialized yet)"
+    lines: list[str] = []
+    for chat in app.chats.values():
+        m = chat.main
         lines.append(
-            f"{name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(idle)'}"
+            f"[chat {chat.chat_id}] main: cwd={m.cwd} state={m.state} cmd={m.last_command or '(idle)'}"
         )
-    for cid, state in app.bash_state.background_shells.items():
-        lines.append(f"bg/{cid}: {state.last_command} (state={state.state})")
+        for name, shell in chat.sessions.items():
+            lines.append(
+                f"[chat {chat.chat_id}] {name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(idle)'}"
+            )
+        for cid, state in m.background_shells.items():
+            lines.append(f"[chat {chat.chat_id}] bg/{cid}: {state.last_command} (state={state.state})")
     return "\n".join(lines)
 
 
@@ -322,13 +366,17 @@ def workspace_processes() -> str:
 )
 def command_history() -> str:
     app = get_app_from_request()
-    history = app.get_history()
-    if not history:
+    records = [
+        (chat.chat_id, rec)
+        for chat in app.chats.values()
+        for rec in chat.history
+    ]
+    if not records:
         return "No commands executed yet."
     lines = []
-    for i, rec in enumerate(history[-20:], 1):
+    for i, (cid, rec) in enumerate(records[-20:], 1):
         status = "✓" if rec.success else "✗"
-        lines.append(f"{i}. [{status}] [{rec.session}] $ {rec.command}")
+        lines.append(f"{i}. [{status}] [chat {cid}] [{rec.session}] $ {rec.command}")
         for err in rec.errors:
             lines.append(f"   {err}")
     return "\n".join(lines)
@@ -352,14 +400,23 @@ async def health_check(request: Any) -> Any:
     description="Save task context for knowledge transfer or resumption.",
 )
 async def knowledge_transfer(ctx: McpContext) -> str:  # type: ignore[type-arg]
-    return KTS[get_app(ctx).bash_state.mode]
+    # Prompts carry no chat_id; the transfer text is mode-specific and the same
+    # for the default mode across chats.
+    return KTS["babash"]
 
 
 # --- Tools ---
 
 
 @mcp.tool(
-    description="Initialize the shell environment. Optional — auto-initializes on first tool call.",
+    description=(
+        "REQUIRED first call in every conversation. Creates an isolated shell "
+        "workspace for this chat and returns a chat_id. You MUST pass that same "
+        "chat_id to every other babash tool for the rest of the conversation — "
+        "it is how the server keeps your shell separate from other chats sharing "
+        "the same server. Leave chat_id empty here to be assigned a fresh one; "
+        "pass an existing chat_id to reset/resume that workspace."
+    ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -379,9 +436,14 @@ async def babash_initialize(
     initial_files_to_read: list[str] | None = None,
     task_id_to_resume: str = "",
     mode_name: Literal["babash", "architect", "code_writer"] = "babash",
+    chat_id: str = "",
 ) -> str:
     app = get_app(ctx)
-    app.initialized = True
+    cid = chat_id or _new_chat_id()
+    chat = app.get_chat(cid)
+    newly_created = chat is None
+    if chat is None:
+        chat = app.create_chat(cid)
     init_arg = Initialize(
         type=type,
         any_workspace_path=any_workspace_path,
@@ -390,10 +452,17 @@ async def babash_initialize(
         mode_name=mode_name,
     )
     output, _, _ = _handle_initialize(
-        init_arg, make_context(app), CODING_MAX_TOKENS, NONCODING_MAX_TOKENS
+        init_arg, make_context(app, chat), CODING_MAX_TOKENS, NONCODING_MAX_TOKENS
     )
+    if newly_created:
+        await _warmup_shell(chat.main)
     instructions = f"\n{app.custom_instructions}" if app.custom_instructions else ""
-    return f"{output[0]}{instructions}\nInitialize call done.\n"
+    header = (
+        f"Your chat_id is: {cid}\n"
+        f"IMPORTANT: pass chat_id='{cid}' to EVERY babash tool call for the rest "
+        f"of this conversation so your shell stays isolated from other chats.\n\n"
+    )
+    return f"{header}{output[0]}{instructions}\nInitialize call done.\n"
 
 
 @mcp.tool(
@@ -416,12 +485,18 @@ async def babash_initialize(
 async def run_command(
     ctx: McpContext,  # type: ignore[type-arg]
     command: str,
+    chat_id: str,
     is_background: bool = False,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
-    shell = app.get_shell(session)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    try:
+        shell = chat.get_shell(session)
+    except ValueError as e:
+        return f"Error: {e}"
 
     # No in-server destructive-command gate: this client (Claude Desktop)
     # doesn't support MCP elicitation, so any prompt here would silently
@@ -437,24 +512,17 @@ async def run_command(
 
     sname = session or "main"
 
-    # is_background → auto-create a session
+    # is_background → auto-create a session (within this chat)
     if is_background:
         import hashlib
 
         # Key on cwd+command so the same command in two dirs gets two sessions.
         bg_key = f"{shell.cwd}\0{command}"
         bg_name = f"bg_{hashlib.md5(bg_key.encode()).hexdigest()[:6]}"
-        if bg_name not in app.get_sessions():
-            cwd = shell.cwd
-            new_shell = BashState(
-                console=app.console, working_dir=cwd,
-                bash_command_mode=None, file_edit_mode=None,
-                write_if_empty_mode=None, mode=None,
-                use_screen=True, whitelist_for_overwrite=None,
-                thread_id=None, shell_path=_shell_path or None,
-            )
-            app.get_sessions()[bg_name] = new_shell
-        shell = app.get_sessions()[bg_name]
+        if bg_name not in chat.sessions:
+            chat.sessions[bg_name] = app.new_shell(shell.cwd, None)
+            await _warmup_shell(chat.sessions[bg_name])
+        shell = chat.sessions[bg_name]
         sname = bg_name
 
     # Busy check: don't error — run a status check instead so the agent gets
@@ -472,10 +540,10 @@ async def run_command(
         )
         new_text, _, _ = status_out.partition("\n\n---\n\n")
         new_text = new_text.strip()
-        last = app.get_last_outputs().get(sname, "")
+        last = chat.last_output.get(sname, "")
         if last and new_text.startswith(last):
             new_text = new_text[len(last):].lstrip()
-        app.get_last_outputs()[sname] = status_out
+        chat.last_output[sname] = status_out
         shell.save_state_to_disk()
         header = (
             f"Session '{sname}' is still running '{shell.last_command or 'unknown'}' "
@@ -484,9 +552,8 @@ async def run_command(
             f"check_status(session='{sname}') to wait, or create_session(name='other') "
             f"to run in parallel."
         )
-        if new_text:
-            return f"{header}\n\n--- new output ---\n{new_text}"
-        return f"{header}\n\n(no new output yet)"
+        body = f"{header}\n\n--- new output ---\n{new_text}" if new_text else f"{header}\n\n(no new output yet)"
+        return f"{body}\n\n{_roster_footer(chat)}"
 
     bash_cmd = BashCommand.model_validate(
         {
@@ -506,8 +573,8 @@ async def run_command(
 
     if is_background:
         output = f"Running in session '{sname}'. Use check_status(session='{sname}') to monitor.\n{output}"
-    app.get_last_outputs()[sname] = output
-    record_command(app, command, output, sname)
+    chat.last_output[sname] = output
+    record_command(chat, command, output, sname)
 
     errors = detect_errors(output)
     if errors:
@@ -520,7 +587,7 @@ async def run_command(
 
     await ctx.report_progress(1, 1, "done")
     shell.save_state_to_disk()
-    return output
+    return f"{output}\n\n{_roster_footer(chat)}"
 
 
 @mcp.tool(
@@ -538,12 +605,18 @@ async def run_command(
 )
 async def check_status(
     ctx: McpContext,  # type: ignore[type-arg]
+    chat_id: str,
     session: str | None = None,
     wait_for_seconds: float | None = None,
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
-    shell = app.get_shell(session)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    try:
+        shell = chat.get_shell(session)
+    except ValueError as e:
+        return f"Error: {e}"
 
     # Hard cap: never block a session for more than 5s on a single check.
     # If the command needs longer, the agent calls check_status again.
@@ -569,11 +642,10 @@ async def check_status(
     new_text = new_text.strip()
 
     sname = session or "main"
-    last_outputs = app.get_last_outputs()
-    last = last_outputs.get(sname, "")
+    last = chat.last_output.get(sname, "")
     if last and new_text.startswith(last):
         new_text = new_text[len(last):].lstrip()
-    last_outputs[sname] = output
+    chat.last_output[sname] = output
 
     status_line = f"[state={shell.state} cwd={shell.cwd}"
     if shell.state == "pending":
@@ -586,7 +658,7 @@ async def check_status(
         result = f"(no new output) {status_line}"
 
     shell.save_state_to_disk()
-    return result
+    return f"{result}\n\n{_roster_footer(chat)}"
 
 
 @mcp.tool(
@@ -601,11 +673,17 @@ async def check_status(
 async def send_input(
     ctx: McpContext,  # type: ignore[type-arg]
     text: str,
+    chat_id: str,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
-    shell = app.get_shell(session)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    try:
+        shell = chat.get_shell(session)
+    except ValueError as e:
+        return f"Error: {e}"
 
     if not text:
         return "Error: text cannot be empty. Use send_keys('Enter') to press Enter, or send_keys('Ctrl-c') to interrupt."
@@ -619,7 +697,7 @@ async def send_input(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
     )
     shell.save_state_to_disk()
-    return output
+    return f"{output}\n\n{_roster_footer(chat)}"
 
 
 @mcp.tool(
@@ -637,12 +715,18 @@ async def send_input(
 )
 async def send_keys(
     ctx: McpContext,  # type: ignore[type-arg]
+    chat_id: str,
     keys: list[str] | str = "Ctrl-c",
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
-    shell = app.get_shell(session)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    try:
+        shell = chat.get_shell(session)
+    except ValueError as e:
+        return f"Error: {e}"
     keys_list = [keys] if isinstance(keys, str) else keys
     bash_cmd = BashCommand.model_validate(
         {
@@ -655,7 +739,7 @@ async def send_keys(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
     )
     shell.save_state_to_disk()
-    return output
+    return f"{output}\n\n{_roster_footer(chat)}"
 
 
 # --- Session tools ---
@@ -673,29 +757,21 @@ async def send_keys(
 async def create_session(
     ctx: McpContext,  # type: ignore[type-arg]
     name: str,
+    chat_id: str,
     working_directory: str = "",
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
     if name == "main":
         return "Error: 'main' already exists."
-    sessions = app.get_sessions()
-    if name in sessions:
+    if name in chat.sessions:
         return f"Session '{name}' already exists."
-    cwd = working_directory or app.bash_state.cwd
-    sessions[name] = BashState(
-        console=app.console,
-        working_dir=cwd,
-        bash_command_mode=None,
-        file_edit_mode=None,
-        write_if_empty_mode=None,
-        mode=None,
-        use_screen=True,
-        whitelist_for_overwrite=None,
-        thread_id=None,
-        shell_path=_shell_path or None,
-    )
-    return f"Session '{name}' created (cwd: {cwd})."
+    cwd = working_directory or chat.main.cwd
+    chat.sessions[name] = app.new_shell(cwd, None)
+    await _warmup_shell(chat.sessions[name])
+    return f"Session '{name}' created (cwd: {cwd}).\n\n{_roster_footer(chat)}"
 
 
 @mcp.tool(
@@ -707,15 +783,12 @@ async def create_session(
         openWorldHint=False,
     ),
 )
-async def list_sessions(ctx: McpContext) -> str:  # type: ignore[type-arg]
+async def list_sessions(ctx: McpContext, chat_id: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
-    ensure_init(app)
-    lines = [f"- main: cwd={app.bash_state.cwd} state={app.bash_state.state} (default)"]
-    for name, shell in app.get_sessions().items():
-        lines.append(
-            f"- {name}: cwd={shell.cwd} state={shell.state} cmd={shell.last_command or '(none)'}"
-        )
-    return "\n".join(lines)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    return _roster_footer(chat)
 
 
 @mcp.tool(
@@ -727,20 +800,22 @@ async def list_sessions(ctx: McpContext) -> str:  # type: ignore[type-arg]
         openWorldHint=False,
     ),
 )
-async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[type-arg]
+async def destroy_session(ctx: McpContext, name: str, chat_id: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
     if name == "main":
         return "Error: cannot destroy main session."
-    sessions = app.get_sessions()
-    if name not in sessions:
+    if name not in chat.sessions:
         return f"Session '{name}' not found."
-    shell = sessions.pop(name)
+    shell = chat.sessions.pop(name)
     try:
         shell.sendintr()
         shell.cleanup()
     except Exception:
         pass
-    return f"Session '{name}' destroyed."
+    return f"Session '{name}' destroyed.\n\n{_roster_footer(chat)}"
 
 
 # --- File tools ---
@@ -755,12 +830,17 @@ async def destroy_session(ctx: McpContext, name: str) -> str:  # type: ignore[ty
         openWorldHint=False,
     ),
 )
-async def read_files_tool(ctx: McpContext, file_paths: list[str], session: str | None = None) -> str:  # type: ignore[type-arg]
+async def read_files_tool(ctx: McpContext, file_paths: list[str], chat_id: str, session: str | None = None) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
-    ensure_init(app)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
 
     if session:
-        shell = app.get_shell(session)
+        try:
+            shell = chat.get_shell(session)
+        except ValueError as e:
+            return f"Error: {e}"
         if shell.state == "pending":
             return (
                 f"Error: session '{session}' is busy "
@@ -791,13 +871,13 @@ async def read_files_tool(ctx: McpContext, file_paths: list[str], session: str |
         rf.file_paths,
         CODING_MAX_TOKENS,
         NONCODING_MAX_TOKENS,
-        make_context(app),
+        make_context(app, chat),
         rf.start_line_nums,
         rf.end_line_nums,
     )
     if file_ranges:
-        app.bash_state.add_to_whitelist_for_overwrite(file_ranges)
-    app.bash_state.save_state_to_disk()
+        chat.main.add_to_whitelist_for_overwrite(file_ranges)
+    chat.main.save_state_to_disk()
     return result
 
 
@@ -810,10 +890,12 @@ async def read_files_tool(ctx: McpContext, file_paths: list[str], session: str |
         openWorldHint=False,
     ),
 )
-async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[type-arg]
+async def read_image(ctx: McpContext, file_path: str, chat_id: str) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
-    ensure_init(app)
-    image = read_image_from_shell(file_path, make_context(app))
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
+    image = read_image_from_shell(file_path, make_context(app, chat))
     return f"[Image: {image.media_type}, {len(image.data)} bytes base64]"
 
 
@@ -830,12 +912,17 @@ async def read_image(ctx: McpContext, file_path: str) -> str:  # type: ignore[ty
         openWorldHint=False,
     ),
 )
-async def create_file(ctx: McpContext, file_path: str, content: str, session: str | None = None) -> str:  # type: ignore[type-arg]
+async def create_file(ctx: McpContext, file_path: str, content: str, chat_id: str, session: str | None = None) -> str:  # type: ignore[type-arg]
     app = get_app(ctx)
-    ensure_init(app)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
 
     if session:
-        shell = app.get_shell(session)
+        try:
+            shell = chat.get_shell(session)
+        except ValueError as e:
+            return f"Error: {e}"
         # Check if file exists
         check = _exec_in_session(shell, f"test -f {shlex.quote(file_path)} && echo EXISTS || echo NO")
         if "EXISTS" in check:
@@ -844,11 +931,11 @@ async def create_file(ctx: McpContext, file_path: str, content: str, session: st
 
     wf = WriteIfEmpty(file_path=file_path, file_content=content)
     result, paths = write_file(
-        wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app)
+        wf, True, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app, chat)
     )
     if paths:
-        app.bash_state.add_to_whitelist_for_overwrite(paths)
-    app.bash_state.save_state_to_disk()
+        chat.main.add_to_whitelist_for_overwrite(paths)
+    chat.main.save_state_to_disk()
     return result
 
 
@@ -875,13 +962,19 @@ async def file_write_or_edit(
     file_path: str,
     percentage_to_change: int,
     text_or_search_replace_blocks: str,
+    chat_id: str,
     session: str | None = None,
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
 
     if session:
-        shell = app.get_shell(session)
+        try:
+            shell = chat.get_shell(session)
+        except ValueError as e:
+            return f"Error: {e}"
         if shell.state == "pending":
             return (
                 f"Error: session '{session}' is busy "
@@ -909,14 +1002,14 @@ async def file_write_or_edit(
         file_path=file_path,
         percentage_to_change=percentage_to_change,
         text_or_search_replace_blocks=text_or_search_replace_blocks,
-        thread_id=app.bash_state.current_thread_id,
+        thread_id=chat.main.current_thread_id,
     )
     result, paths = file_writing(
-        fwe, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app)
+        fwe, CODING_MAX_TOKENS, NONCODING_MAX_TOKENS, make_context(app, chat)
     )
     if paths:
-        app.bash_state.add_to_whitelist_for_overwrite(paths)
-    app.bash_state.save_state_to_disk()
+        chat.main.add_to_whitelist_for_overwrite(paths)
+    chat.main.save_state_to_disk()
     return result
 
 
@@ -934,17 +1027,20 @@ async def context_save(
     id: str,
     description: str,
     relevant_file_globs: list[str],
+    chat_id: str,
     project_root_path: str = "",
 ) -> str:
     app = get_app(ctx)
-    ensure_init(app)
+    chat, err = _resolve_chat(app, chat_id)
+    if chat is None:
+        return err
     cs = ContextSave(
         id=id,
         project_root_path=project_root_path,
         description=description,
         relevant_file_globs=relevant_file_globs,
     )
-    return _handle_context_save(cs, make_context(app))
+    return _handle_context_save(cs, make_context(app, chat))
 
 
 # --- Entry point ---

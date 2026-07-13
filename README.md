@@ -55,6 +55,23 @@ docker build -t babash https://github.com/airaneel/babash.git
 docker run -i --rm --mount type=bind,src=/your/workspace,dst=/workspace babash
 ```
 
+## Per-chat isolation (`chat_id`)
+
+A single babash process is shared by every conversation that connects to it
+(over stdio all of Claude Desktop's chats share one process; over
+streamable-http the client sends no per-conversation id either —
+[claude-code#41836](https://github.com/anthropics/claude-code/issues/41836)). So
+the transport gives the server no way to tell chats apart.
+
+babash resolves this with a `chat_id` the model carries in its own context:
+`babash_initialize` mints one and every other tool requires it. Each `chat_id`
+owns an independent "main" shell plus its own named sessions — separate cwd,
+env, running command and on-disk state — so parallel chats never step on each
+other, with no locking. An unknown `chat_id` is rejected rather than silently
+sharing another chat's shell. If the model omits the id, isolation degrades but
+nothing is corrupted (collision-free shell ids keep state files and screen
+sessions distinct regardless).
+
 ## Tools
 
 | Tool | Description |

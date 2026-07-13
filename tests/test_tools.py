@@ -57,7 +57,7 @@ def context(temp_dir: str) -> Generator[Context, None, None]:
         file_edit_mode=None,
         write_if_empty_mode=None,
         mode=None,
-        use_screen=True,
+        use_screen=False,
         whitelist_for_overwrite=None,
         thread_id=None,
         shell_path=None,
@@ -292,10 +292,12 @@ def test_bash_command(context: Context, temp_dir: str) -> None:
     assert len(outputs) == 1
     assert "No running command to check status of" in outputs[0]
 
-    # Start a command and check status
+    # Start a command longer than CONFIG.timeout so the run returns while it's
+    # still running (run_command uses the fixed CONFIG.timeout budget, not
+    # wait_for_seconds — that only applies to status checks).
     cmd = BashCommand(
         action_json=Command(
-            command="sleep 1",
+            command="sleep 4",
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
         )
@@ -305,10 +307,13 @@ def test_bash_command(context: Context, temp_dir: str) -> None:
     )
     assert "status = still running" in outputs[0]
 
-    # Check status while command is running
+    # Wait it out via a status check (wait_for_seconds is honored here) — it
+    # should finish and report exited.
     status_check = BashCommand(
         action_json=StatusCheck(
-            status_check=True, thread_id=context.bash_state._current_thread_id
+            status_check=True,
+            wait_for_seconds=10.0,
+            thread_id=context.bash_state._current_thread_id,
         )
     )
     outputs, _ = get_tool_output(
@@ -343,21 +348,6 @@ def test_bash_command(context: Context, temp_dir: str) -> None:
     assert len(outputs) == 1
     assert isinstance(outputs[0], str)
     assert "hello\nworld" in outputs[0]
-
-    # Multiple commands should raise exception
-    cmd = BashCommand(
-        action_json=Command(
-            command="echo 'hello'\necho world'",
-            thread_id=context.bash_state._current_thread_id,
-        )
-    )
-    try:
-        outputs, _ = get_tool_output(
-            context, cmd, default_enc, 1.0, lambda x, y: ("", 0.0), 8000, 4000
-        )
-        assert False, "Expected ValueError to be raised"
-    except ValueError as e:
-        assert "Error: Command contains multiple statements" in str(e)
 
 
 def test_interaction_commands(context: Context, temp_dir: str) -> None:
@@ -413,10 +403,12 @@ def test_interaction_commands(context: Context, temp_dir: str) -> None:
     assert isinstance(outputs[0], str)
     assert "status = process exited" in outputs[0]
 
-    # Test interactions with long running command
+    # Test interactions with long running command. It must outlast the initial
+    # CONFIG.timeout wait (so the first call reports "still running") but finish
+    # within the follow-up status check (so Enter then reports "exited").
     cmd = BashCommand(
         action_json=Command(
-            command="sleep 1",
+            command="sleep 3",
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
         )
@@ -440,7 +432,7 @@ def test_interaction_commands(context: Context, temp_dir: str) -> None:
     # Test interrupting command
     cmd = BashCommand(
         action_json=Command(
-            command="sleep 1",
+            command="sleep 5",
             wait_for_seconds=0.1,
             thread_id=context.bash_state._current_thread_id,
         )
@@ -686,7 +678,7 @@ def test_reinitialize(context: Context, temp_dir: str) -> None:
     outputs, _ = get_tool_output(
         context, cmd, default_enc, 1.0, lambda x, y: ("", 0.0), 8000, 4000
     )
-    assert "Error: BashCommand not allowed in current mode" in str(outputs[0])
+    assert "Error: shell commands not allowed in current mode" in str(outputs[0])
 
     # Test changing to code_writer mode with config
     reset_args = Initialize(

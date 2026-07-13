@@ -248,6 +248,7 @@ class BashState:
                     self.console,
                     over_screen=self._use_screen,
                     shell_path=self._shell_path,
+                    unique_id=self._current_thread_id,
                 )
                 self._over_screen = self._use_screen
             except Exception as e:
@@ -260,6 +261,7 @@ class BashState:
                     self.console,
                     over_screen=False,
                     shell_path=self._shell_path,
+                    unique_id=self._current_thread_id,
                 )
                 self._over_screen = False
 

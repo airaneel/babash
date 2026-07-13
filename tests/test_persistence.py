@@ -20,8 +20,12 @@ from babash.types_ import ReadFiles
 def test_generate_thread_id() -> None:
     tid = generate_thread_id()
     assert tid.startswith("i")
-    assert len(tid) == 5
-    assert tid[1:].isdigit()
+    # Collision-free id (uuid-based): word chars, and distinct across calls —
+    # this uniqueness is what keeps concurrent shells from clobbering each
+    # other's on-disk state.
+    assert tid[1:].isalnum()
+    assert len(tid) > 5
+    assert generate_thread_id() != generate_thread_id()
 
 
 def test_save_and_load_bash_state(tmp_path: Any) -> None:
