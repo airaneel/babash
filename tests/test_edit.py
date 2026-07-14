@@ -1,16 +1,15 @@
 import os
 import tempfile
 from typing import Generator
-import re
 import pytest
 
 from babash.client.bash_state.bash_state import BashState
-from babash.client.file_ops.diff_edit import SearchReplaceMatchError
+from babash.client.file_ops.diff_edit import SearchReplaceMatchError, fix_indentation
 from babash.client.file_ops.search_replace import SearchReplaceSyntaxError
+from tool_dispatch import get_tool_output  # test-only dispatcher
 from babash.client.tools import (
     Context,
     default_enc,
-    get_tool_output,
 )
 from babash.types_ import FileWriteOrEdit, Initialize
 
@@ -289,51 +288,6 @@ def hello():
     )
 
 
-
-
-def fix_indentation(
-    matched_lines: list[str], searched_lines: list[str], replaced_lines: list[str]
-) -> list[str]:
-    if not matched_lines or not searched_lines or not replaced_lines:
-        return replaced_lines
-
-    def get_indentation(line: str) -> str:
-        match = re.match(r"^(\s*)", line)
-        assert match
-        return match.group(0)
-
-    matched_indents = [get_indentation(line) for line in matched_lines if line.strip()]
-    searched_indents = [
-        get_indentation(line) for line in searched_lines if line.strip()
-    ]
-    if len(matched_indents) != len(searched_indents):
-        return replaced_lines
-
-    diffs: list[int] = [
-        len(searched) - len(matched)
-        for matched, searched in zip(matched_indents, searched_indents)
-    ]
-    if not diffs:
-        return replaced_lines
-    if not all(diff == diffs[0] for diff in diffs):
-        return replaced_lines
-
-    if diffs[0] == 0:
-        return replaced_lines
-
-    def adjust_indentation(line: str, diff: int) -> str:
-        if diff < 0:
-            # Need to add -diff spaces
-            return matched_indents[0][:-diff] + line
-        # Need to remove diff spaces
-        return line[diff:]
-
-    if diffs[0] > 0:
-        # Check if replaced_lines have enough leading spaces to remove
-        if not all(not line[: diffs[0]].strip() for line in replaced_lines):
-            return replaced_lines
-
-    return [adjust_indentation(line, diffs[0]) for line in replaced_lines]
 
 
 def test_empty_inputs() -> None:

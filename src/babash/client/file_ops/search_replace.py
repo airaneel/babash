@@ -101,7 +101,7 @@ def search_replace_edit(
         )
 
     edited_content, comments_ = edit_with_individual_fallback(
-        original_lines, search_replace_blocks, False
+        original_lines, search_replace_blocks
     )
 
     edited_file = "\n".join(edited_content)
@@ -154,7 +154,6 @@ def identify_first_differing_block(
 def edit_with_individual_fallback(
     original_lines: list[str],
     search_replace_blocks: list[tuple[list[str], list[str]]],
-    replace_all: bool,
 ) -> tuple[list[str], set[str]]:
     outputs = FileEditInput(original_lines, 0, search_replace_blocks, 0).edit_file()
     best_matches = FileEditOutput.get_best_match(outputs)
@@ -168,7 +167,7 @@ def edit_with_individual_fallback(
                 running_lines = list(original_lines)
                 for block in search_replace_blocks:
                     running_lines, comments_ = edit_with_individual_fallback(
-                        running_lines, [block], replace_all
+                        running_lines, [block]
                     )
                     all_comments |= comments_
                 return running_lines, all_comments
@@ -180,17 +179,8 @@ def edit_with_individual_fallback(
                 pass
         raise
 
-    if replace_all and len(best_matches) > 1 and len(search_replace_blocks) == 1:
-        # For only one search/replace block only replace all
-        try:
-            edited_content, comments__ = edit_with_individual_fallback(
-                edited_content, search_replace_blocks, replace_all
-            )
-            comments_ |= comments__
-        except SearchReplaceMatchError:
-            # Will not happen ideally, but still no use of throwing error here
-            pass
-    elif len(best_matches) > 1:
+    if len(best_matches) > 1:
+        # Ambiguous: the same search block matched in more than one place.
         # Find the first block that differs across matches
         first_diff_block = identify_first_differing_block(best_matches)
         if first_diff_block is not None:

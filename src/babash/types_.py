@@ -4,10 +4,12 @@ from typing import Annotated, Any, Literal, Optional, Protocol, Sequence, Union
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import (
+    ConfigDict,
     Discriminator,
     Field,
     PrivateAttr,
     Tag,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -18,18 +20,18 @@ def normalize_thread_id(thread_id: str) -> str:
     return re.sub(r"[^\w]", "", thread_id)
 
 
-def _patch_singleton_all(
-    value: Literal["all"] | list[str],
-) -> Literal["all"] | list[str]:
-    """Patch ["all"] to "all" — handles frequent LLM output quirk."""
+def _patch_singleton_all(value: Any) -> Any:
+    """Patch ["all"] to "all" — handles a frequent LLM output quirk.
+
+    Runs as a `mode="before"` validator, so the input is still raw and untyped.
+    """
     if isinstance(value, list) and len(value) == 1 and value[0] == "all":
         return "all"
     return value
 
 
 class NoExtraArgs(PydanticBaseModel):
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 BaseModel = NoExtraArgs
@@ -42,9 +44,10 @@ class CodeWriterMode(BaseModel):
     allowed_globs: Literal["all"] | list[str]
     allowed_commands: Literal["all"] | list[str]
 
-    def model_post_init(self, _: Any) -> None:
-        self.allowed_commands = _patch_singleton_all(self.allowed_commands)
-        self.allowed_globs = _patch_singleton_all(self.allowed_globs)
+    # Normalize on the way in instead of mutating the model in model_post_init.
+    _patch = field_validator("allowed_globs", "allowed_commands", mode="before")(
+        _patch_singleton_all
+    )
 
     def update_relative_globs(self, workspace_root: str) -> None:
         """Update globs if they're relative paths"""
@@ -94,29 +97,41 @@ class Initialize(BaseModel):
         description="Shell commands that are allowed to be executed. Set to 'all' to allow all commands, or provide a list of command patterns. Only required when mode_name is 'code_writer'.",
     )
 
-    def model_post_init(self, __context: Any) -> None:
-        self.thread_id = normalize_thread_id(self.thread_id)
+    # Normalize on the way in rather than mutating the model afterwards.
+    _norm_thread_id = field_validator("thread_id", mode="before")(
+        lambda v: normalize_thread_id(v) if isinstance(v, str) else v
+    )
+    _patch_all = field_validator("allowed_globs", "allowed_commands", mode="before")(
+        _patch_singleton_all
+    )
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> "Initialize":
+        # Raise, don't assert: `python -O` strips asserts, which would silently
+        # remove this validation entirely.
         if self.mode_name == "code_writer":
-            assert self.allowed_globs is not None, (
-                "allowed_globs can't be null when the mode is code_writer"
-            )
-            assert self.allowed_commands is not None, (
-                "allowed_commands can't be null when the mode is code_writer"
-            )
-            self.allowed_commands = _patch_singleton_all(self.allowed_commands)
-            self.allowed_globs = _patch_singleton_all(self.allowed_globs)
+            if self.allowed_globs is None:
+                raise ValueError(
+                    "allowed_globs is required when mode_name is 'code_writer'"
+                )
+            if self.allowed_commands is None:
+                raise ValueError(
+                    "allowed_commands is required when mode_name is 'code_writer'"
+                )
         if self.type != "first_call" and not self.thread_id:
             raise ValueError(
                 "Thread id should be provided if type != 'first_call', including when resetting"
             )
-        return super().model_post_init(__context)
+        return self
 
     @property
     def mode(self) -> ModesConfig:
         if self.mode_name != "code_writer":
             return self.mode_name
-        assert self.allowed_globs is not None
-        assert self.allowed_commands is not None
+        # Guaranteed non-None by _check_invariants; re-checked (not asserted) so
+        # the contract survives -O and mypy sees the narrowing.
+        if self.allowed_globs is None or self.allowed_commands is None:
+            raise ValueError("code_writer mode requires allowed_globs and allowed_commands")
         return CodeWriterMode(
             allowed_globs=self.allowed_globs, allowed_commands=self.allowed_commands
         )
@@ -135,16 +150,16 @@ class CommandBase(PydanticBaseModel):
     (e.g. sending 'command' with type='status_check') are silently ignored
     rather than causing validation errors."""
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
     wait_for_seconds: Optional[float] = None
     thread_id: str = ""
 
-    def model_post_init(self, __context: Any) -> None:
-        if self.thread_id:
-            self.thread_id = normalize_thread_id(self.thread_id)
-        return super().model_post_init(__context)
+    @field_validator("thread_id", mode="before")
+    @classmethod
+    def _normalize_thread_id(cls, v: Any) -> Any:
+        # Normalize on the way in rather than mutating the model afterwards.
+        return normalize_thread_id(v) if isinstance(v, str) and v else v
 
 
 class Command(CommandBase):
@@ -180,77 +195,6 @@ class SendAscii(CommandBase):
     send_ascii: Sequence[int]
     type: Literal["send_ascii"] = "send_ascii"
     bg_command_id: str | None = None
-
-
-_BASH_COMMAND_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "required": ["type"],
-    "properties": {
-        "type": {
-            "type": "string",
-            "enum": ["command", "status_check", "send_text", "send_specials", "send_ascii"],
-            "description": "Action type. Determines which field to set.",
-        },
-        "wait_for_seconds": {"type": "number", "description": "Optional timeout."},
-    },
-    "oneOf": [
-        {
-            "title": "Run a shell command",
-            "properties": {
-                "type": {"const": "command"},
-                "command": {"type": "string", "description": "Shell command to execute."},
-                "is_background": {"type": "boolean", "default": False, "description": "Run in background."},
-            },
-            "required": ["command"],
-        },
-        {
-            "title": "Check status of a running command",
-            "properties": {
-                "type": {"const": "status_check"},
-                "bg_command_id": {"type": "string", "description": "Background command ID to check."},
-            },
-        },
-        {
-            "title": "Send text input to a running program",
-            "properties": {
-                "type": {"const": "send_text"},
-                "send_text": {"type": "string", "description": "Text to send to stdin."},
-                "bg_command_id": {"type": "string", "description": "Background command ID."},
-            },
-            "required": ["send_text"],
-        },
-        {
-            "title": "Send special keys",
-            "properties": {
-                "type": {"const": "send_specials"},
-                "send_specials": {
-                    "oneOf": [
-                        {"type": "array", "items": {"type": "string", "enum": ["Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"]}},
-                        {"type": "string"},
-                    ],
-                    "description": "Special keys to send. Array like [\"Ctrl-c\"] or single string.",
-                },
-                "bg_command_id": {"type": "string", "description": "Background command ID."},
-            },
-            "required": ["send_specials"],
-        },
-        {
-            "title": "Send raw ASCII codes",
-            "properties": {
-                "type": {"const": "send_ascii"},
-                "send_ascii": {
-                    "oneOf": [
-                        {"type": "array", "items": {"type": "integer"}},
-                        {"type": "string"},
-                    ],
-                    "description": "ASCII codes to send. Array like [3] or string.",
-                },
-                "bg_command_id": {"type": "string", "description": "Background command ID."},
-            },
-            "required": ["send_ascii"],
-        },
-    ],
-}
 
 
 def _bash_action_discriminator(data: Any) -> str:
@@ -322,10 +266,6 @@ class BashCommand(BaseModel):
     @model_serializer(mode="plain")
     def serialize_model(self) -> dict[str, Any]:
         return self.action_json.model_dump()
-
-    @staticmethod
-    def model_json_schema(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return _BASH_COMMAND_SCHEMA
 
 
 class ReadImage(BaseModel):

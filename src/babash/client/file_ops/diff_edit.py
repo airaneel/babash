@@ -229,6 +229,10 @@ def fix_indentation(
         len(searched) - len(matched)
         for matched, searched in zip(matched_indents, searched_indents)
     ]
+    # If every matched/searched line is blank both indent lists are empty, so
+    # diffs is empty and diffs[0] below would raise IndexError.
+    if not diffs:
+        return replaced_lines
     if not all(diff == diffs[0] for diff in diffs):
         return replaced_lines
     if diffs[0] == 0:
@@ -373,21 +377,25 @@ class FileEditInput:
             matches_with_tolerances = [(match, []) for match in matches]
 
         for match, tolerances in matches_with_tolerances:
+            # Derive per match: fix_line_nums/fix_indentation must start from the
+            # block's original replacement every time. Reassigning `replace_by`
+            # itself would feed match N's adjusted text into match N+1.
+            match_replace_by = replace_by
             if any(
                 tolerance.error_name == REMOVE_LINE_NUMS for tolerance in tolerances
             ):
-                replace_by = fix_line_nums(
+                match_replace_by = fix_line_nums(
                     self.file_lines[match.start : match.stop],
                     first_block[0],
-                    replace_by,
+                    match_replace_by,
                 )
             if any(
                 tolerance.error_name == REMOVE_INDENTATION for tolerance in tolerances
             ):
-                replace_by = fix_indentation(
+                match_replace_by = fix_indentation(
                     self.file_lines[match.start : match.stop],
                     first_block[0],
-                    replace_by,
+                    match_replace_by,
                 )
 
             file_edit_input = FileEditInput(
@@ -402,7 +410,7 @@ class FileEditInput:
                 # Exit early
                 all_outputs.append(
                     [
-                        (match, tolerances, replace_by),
+                        (match, tolerances, match_replace_by),
                     ]
                 )
             else:
@@ -410,7 +418,7 @@ class FileEditInput:
                 for rem_output in remaining_output:
                     all_outputs.append(
                         [
-                            (match, tolerances, replace_by),
+                            (match, tolerances, match_replace_by),
                             *rem_output.edited_with_tolerances,
                         ]
                     )
@@ -456,7 +464,10 @@ def match_exact(
     if n_content == 0:
         return []
     content_positions = DefaultDict[str, set[int]](set)
-    for i in range(content_offset, n_content):
+    # n_content is a *count* of remaining lines, not an end index — the loop must
+    # run to len(content), or every block after the first (content_offset > 0)
+    # would leave the last content_offset lines of the file unindexed.
+    for i in range(content_offset, len(content)):
         content_positions[content[i]].add(i)
     search_line_positions = [content_positions[line] for line in search]
 
@@ -480,7 +491,8 @@ def match_with_tolerance(
     if n_content == 0:
         return []
     content_positions = DefaultDict[str, set[int]](set)
-    for i in range(content_offset, n_content):
+    # See match_exact: n_content is a count, len(content) is the end index.
+    for i in range(content_offset, len(content)):
         content_positions[content[i]].add(i)
     search_line_positions = [content_positions[line] for line in search]
 
@@ -489,7 +501,7 @@ def match_with_tolerance(
     ]
     for tidx, tolerance in enumerate(tolerances):
         content_positions = DefaultDict[str, set[int]](set)
-        for i in range(content_offset, n_content):
+        for i in range(content_offset, len(content)):
             line = content[i]
             content_positions[tolerance.line_process(line)].add(i)
         for i, line in enumerate(search):
