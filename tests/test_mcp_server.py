@@ -128,6 +128,34 @@ def test_check_status() -> None:
         proc.terminate()
 
 
+def test_polling_a_slow_command_stays_small() -> None:
+    """An agent waiting on a build polls every few seconds. Each of those replies
+    used to restate the running command twice — once in the status line, once in
+    the roster — and list every idle shell besides. Nothing in it changed between
+    polls, so it was the same several hundred tokens over and over."""
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        _call(send, recv, "create_session", {"name": "watch", "chat_id": cid}, 2)
+
+        command = "echo begin; sleep 20; echo end"
+        _call(send, recv, "run_command", {"command": command, "chat_id": cid}, 3)
+
+        poll = _call(send, recv, "check_status", {"chat_id": cid, "wait_for_seconds": 2}, 4)
+        text = poll["result"]["content"][0]["text"]
+
+        assert "still running" in text
+        assert "watch" not in text          # idle: not news, not repeated
+        assert text.count(command) <= 1     # said once, not twice
+        assert len(text) < 300
+
+        # And the roster is still there for the asking.
+        listed = _call(send, recv, "list_sessions", {"chat_id": cid}, 5)
+        assert "watch: idle" in listed["result"]["content"][0]["text"]
+    finally:
+        proc.terminate()
+
+
 def test_babash_initialize() -> None:
     proc, send, recv, _ = _session()
     try:

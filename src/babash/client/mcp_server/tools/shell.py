@@ -10,7 +10,7 @@ from mcp.types import ToolAnnotations
 
 from ....types_ import Command, SendSpecials, SendText, Specials, StatusCheck
 from ...bash_state import STATUS_SEPARATOR, BashState, execute_bash
-from ..chat import new_chat_id, resolve_chat, roster_footer, warmup_shell
+from ..chat import abbreviate, full_roster, new_chat_id, resolve_chat, roster_footer, warmup_shell
 from ..helpers import detect_errors, record_command
 from ..instance import get_app, mcp
 from ..state import AppState, ChatWorkspace
@@ -41,6 +41,16 @@ class _Target:
     name: str
     budget: float | None
     preamble: str
+
+
+def _reply(body: str, chat: ChatWorkspace, sname: str) -> str:
+    """A tool's answer, plus the other sessions — if any of them have news.
+
+    roster_footer is empty when every other session is idle, which is the usual
+    case, so this keeps a poll's reply down to the poll's answer.
+    """
+    footer = roster_footer(chat, exclude=sname)
+    return f"{body}\n\n{footer}" if footer else body
 
 
 def _background_name(chat: ChatWorkspace, shell: BashState, command: str) -> str:
@@ -129,7 +139,7 @@ async def babash_initialize(
         f"Your chat_id is: {cid}\n"
         f"IMPORTANT: pass chat_id='{cid}' to EVERY babash tool call for the rest "
         f"of this conversation so your shell stays isolated from other chats.\n\n"
-        f"{roster_footer(chat)}"
+        f"{full_roster(chat)}"
     )
 
 
@@ -216,7 +226,7 @@ async def run_command(
             if new_text
             else f"{header}\n\n(no new output yet)"
         )
-        return f"{body}\n\n{roster_footer(chat)}"
+        return _reply(body, chat, sname)
 
     output = target.preamble + await anyio.to_thread.run_sync(
         execute_bash,
@@ -236,7 +246,7 @@ async def run_command(
         output = "(ok, no output)" if shell.state == "repl" else "(running, no output yet)"
 
     await ctx.report_progress(1, 1, "done")
-    return f"{output}\n\n{roster_footer(chat)}"
+    return _reply(output, chat, sname)
 
 
 @mcp.tool(
@@ -277,12 +287,15 @@ async def check_status(
 
     # execute_bash's own status block starts with "---", which renders as a
     # markdown rule and hides everything after it. Restate it as a plain line.
+    #
+    # It does NOT restate the running command. The agent started it one or two
+    # turns ago and every poll used to hand the whole thing back — a 300-char
+    # ansible pipeline, verbatim, every five seconds, saying nothing that had
+    # changed. What changes is the elapsed time and, eventually, the exit code.
     prompt = shell.pending_prompt()
     status_line = f"[state={shell.state} cwd={shell.cwd}"
     if shell.state == "pending":
-        status_line += (
-            f" running={shell.last_command or '(unknown)'} for={shell.get_pending_for()}"
-        )
+        status_line += f" for={shell.get_pending_for()}"
     elif shell.last_exit_code is not None:
         status_line += f" exit={shell.last_exit_code}"
     status_line += "]"
@@ -301,9 +314,13 @@ async def check_status(
         )
     elif new_text:
         result = f"{new_text}\n\n{status_line}"
+    elif shell.state == "pending":
+        # The whole reply, when a slow command is merely slow. Anything more is a
+        # copy of the previous poll.
+        result = f"(still running '{abbreviate(shell.last_command or '?')}') {status_line}"
     else:
         result = f"(no new output) {status_line}"
-    return f"{result}\n\n{roster_footer(chat)}"
+    return _reply(result, chat, sname)
 
 
 @mcp.tool(
@@ -341,7 +358,7 @@ async def send_input(
     output = await anyio.to_thread.run_sync(
         execute_bash, shell, SendText(send_text=text), app.settings.max_output_chars, None
     )
-    return f"{output}\n\n{roster_footer(chat)}"
+    return _reply(output, chat, session or "main")
 
 
 @mcp.tool(
@@ -386,4 +403,4 @@ async def send_keys(
         app.settings.max_output_chars,
         None,
     )
-    return f"{output}\n\n{roster_footer(chat)}"
+    return _reply(output, chat, session or "main")
