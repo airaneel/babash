@@ -20,6 +20,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import pexpect
+
+from ...settings import Settings
 from ..bash_state import BashState
 
 logger = logging.getLogger("babash")
@@ -69,39 +72,38 @@ class ChatWorkspace:
         return [self.main, *self.sessions.values()]
 
     def cleanup(self) -> None:
+        """Kill every shell this chat owns.
+
+        Nothing here may raise: a pty that fails to close must not stop the next
+        one from being closed, and a leaked pty outlives the server.
+        """
         for shell in self.all_shells():
             try:
                 shell.cleanup()
-            except Exception:
-                pass
+            except (pexpect.ExceptionPexpect, OSError) as e:
+                logger.warning("could not close shell %s: %s", shell.shell_id, e)
 
 
 @dataclass
 class AppState:
-    """Process-wide state: the config needed to spin up shells, plus the live
+    """Process-wide state: the settings needed to spin up shells, plus the live
     per-chat workspaces. Holds no single ambient shell — every shell belongs to
     a chat."""
 
-    custom_instructions: str | None
+    settings: Settings
     console: Console
-    base_working_dir: str
-    shell_path: str | None
     chats: dict[str, ChatWorkspace]
 
-    def new_shell(self, working_dir: str, thread_id: str | None) -> BashState:
-        """Construct (and start) a fresh shell. thread_id=None mints a unique
-        one, which keeps the shell's on-disk state and screen name distinct."""
+    def new_shell(self, working_dir: str) -> BashState:
+        """Construct (and start) a fresh shell with a unique id, which is what
+        keeps its screen session distinct from every other shell's."""
         return BashState(
             console=self.console,
             working_dir=working_dir,
-            bash_command_mode=None,
-            file_edit_mode=None,
-            write_if_empty_mode=None,
-            mode=None,
             use_screen=True,
-            whitelist_for_overwrite=None,
-            thread_id=thread_id,
-            shell_path=self.shell_path,
+            shell_id=None,
+            shell_path=self.settings.shell_path,
+            timings=self.settings.timings,
         )
 
     def get_chat(self, chat_id: str) -> ChatWorkspace | None:
@@ -115,10 +117,14 @@ class AppState:
             existing.cleanup()
         chat = ChatWorkspace(
             chat_id=chat_id,
-            main=self.new_shell(self.base_working_dir, None),
+            main=self.new_shell(self.settings.workspace),
             sessions={},
             last_output={},
             history=[],
         )
         self.chats[chat_id] = chat
         return chat
+
+    def cleanup(self) -> None:
+        for chat in self.chats.values():
+            chat.cleanup()

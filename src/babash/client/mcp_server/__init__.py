@@ -12,12 +12,7 @@ main = Typer()
 
 @main.command()
 def app(
-    version: bool = typer.Option(
-        False, "--version", "-v", help="Show version and exit"
-    ),
-    shell: str = typer.Option(
-        "", "--shell", help="Path to shell executable (defaults to $SHELL or /bin/bash)"
-    ),
+    version: bool = typer.Option(False, "--version", "-v", help="Show version and exit"),
     transport: str = typer.Option(
         "stdio",
         "--transport",
@@ -25,17 +20,21 @@ def app(
         help="Transport: stdio or streamable-http",
     ),
 ) -> None:
-    """babash MCP server."""
+    """babash MCP server.
+
+    Configured entirely through the environment — BABASH_SHELL, BABASH_TIMEOUT,
+    BABASH_HOST, … — which is read once at import (see settings.py). There is
+    deliberately no flag mirroring any of it: a second way to set the same knob
+    is a second place to look when it turns out wrong.
+    """
     if version:
-        version_ = metadata.version("babash")
-        print(f"babash version: {version_}")
+        print(f"babash version: {metadata.version('babash')}")
         raise typer.Exit()
 
-    server._shell_path = shell
     if transport == "streamable-http":
         server.mcp.run(transport="streamable-http")
     else:
-        asyncio.run(server.main(shell))
+        asyncio.run(server.main())
 
 
 __all__ = ["main", "server"]

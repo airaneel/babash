@@ -2,19 +2,18 @@
 authors = [{ name = "Aman Rusia", email = "gapypi@arcfu.com" }]
 name = "babash"
 version = "5.6.2"
-description = "Shell and coding agent MCP server"
+description = "A terminal MCP server: persistent, isolated shells for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.12.5",
     "pexpect>=4.9.0",
     "pyte>=0.8.2",
-    "pydantic>=2.9.2",
-    "tokenizers>=0.21.0",
-    "syntax-checker==0.4.0",
     "psutil>=7.0.0",
     "mcp>=1.23.0",
-    "wcmatch>=10.1",
+    # PDF text extraction. 2MB, BSD, and — unusually — zero transitive
+    # dependencies. PyMuPDF is faster but AGPL, which would relicense babash.
+    "pypdf>=6.0.0",
 ]
 
 [project.urls]
@@ -40,10 +39,8 @@ default-groups = []
 [dependency-groups]
 types = [
     "mypy>=1.11.2",
-    "types-toml>=0.10.8.20240310",
     "types-pexpect>=4.9.0.20241208",
     "types-psutil>=7.0.0.20250218",
-    "line-profiler>=4.2.0",
 ]
 tests = [
     "pytest>=8.0.0",
@@ -51,11 +48,7 @@ tests = [
     "pytest-asyncio>=0.25.3",
 ]
 dev = [
-    "autoflake",
-    "ipython>=8.12.3",
-    "gunicorn>=23.0.0",
-    "line-profiler>=4.2.0",
-    "pyright>=1.1.407",
+    "ruff>=0.8.0",
 ]
 
 [tool.pytest.ini_options]

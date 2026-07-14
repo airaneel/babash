@@ -2,7 +2,7 @@
 
 ## Hard rules
 
-- Make sure mypy --strict passes for these two folders `uv run mypy --strict src/wcgw src/wcgw_cli`.
+- Make sure mypy --strict passes: `uv run mypy --strict src/babash`.
 - Use `list` directly for typing like `list[str]` no need to import `List`. Same thing for `tuple`, `set`, etc.
 - No optional parameters in a function with default values. All parameters must be passed by a caller.
 - This library uses `uv` as package manager. To add a package `uv add numpy`. To run pytest `uv run pytest` and so on.

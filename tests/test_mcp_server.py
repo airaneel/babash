@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import time
 import sys
 from typing import Any, Callable
 
@@ -68,7 +69,7 @@ def _call(send: SendFn, recv: RecvFn, name: str, arguments: dict[str, Any], req_
 
 def _init_chat(send: SendFn, recv: RecvFn, req_id: int) -> str:
     """Call babash_initialize and return the assigned chat_id."""
-    r = _call(send, recv, "babash_initialize", {"type": "first_call"}, req_id)
+    r = _call(send, recv, "babash_initialize", {}, req_id)
     text: str = r["result"]["content"][0]["text"]
     for line in text.splitlines():
         if line.startswith("Your chat_id is:"):
@@ -97,22 +98,11 @@ def test_list_tools() -> None:
         assert "check_status" in names
         assert "send_input" in names
         assert "send_keys" in names
-        assert "read_files_tool" in names
-        assert "file_write_or_edit" in names
-        assert "context_save" in names
+        assert "read_file" in names
+        assert "write_file" in names
+        assert "edit_file" in names
+        assert "create_session" in names
         assert "babash_initialize" in names
-    finally:
-        proc.terminate()
-
-
-def test_list_prompts() -> None:
-    proc, send, recv, _ = _session()
-    try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}})
-        r = recv()
-        prompts = r["result"]["prompts"]
-        assert len(prompts) > 0
-        assert any(p["name"] == "KnowledgeTransfer" for p in prompts)
     finally:
         proc.terminate()
 
@@ -141,10 +131,56 @@ def test_check_status() -> None:
 def test_babash_initialize() -> None:
     proc, send, recv, _ = _session()
     try:
-        r = _call(send, recv, "babash_initialize", {"type": "first_call"}, 1)
+        r = _call(send, recv, "babash_initialize", {}, 1)
         text = r["result"]["content"][0]["text"]
-        assert "Initialize call done" in text
         assert "Your chat_id is:" in text
+    finally:
+        proc.terminate()
+
+
+def test_file_tools_roundtrip(tmp_path: Any) -> None:
+    """write -> read -> edit, over the wire."""
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        path = str(tmp_path / "note.txt")
+
+        r = _call(send, recv, "write_file",
+                  {"file_path": path, "content": "alpha\nbeta\n", "chat_id": cid}, 2)
+        assert "Created" in r["result"]["content"][0]["text"]
+
+        r = _call(send, recv, "read_file", {"file_path": path, "chat_id": cid}, 3)
+        assert "alpha" in r["result"]["content"][0]["text"]
+
+        r = _call(send, recv, "edit_file",
+                  {"file_path": path, "old_string": "beta", "new_string": "GAMMA",
+                   "chat_id": cid}, 4)
+        assert "Replaced 1 occurrence" in r["result"]["content"][0]["text"]
+
+        r = _call(send, recv, "read_file", {"file_path": path, "chat_id": cid}, 5)
+        text = r["result"]["content"][0]["text"]
+        assert "GAMMA" in text and "beta" not in text
+    finally:
+        proc.terminate()
+
+
+def test_sessions_are_independent(tmp_path: Any) -> None:
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        _call(send, recv, "create_session", {"name": "other", "chat_id": cid}, 2)
+
+        _call(send, recv, "run_command",
+              {"command": "export WHO=main", "chat_id": cid}, 3)
+        _call(send, recv, "run_command",
+              {"command": "export WHO=other", "chat_id": cid, "session": "other"}, 4)
+
+        r = _call(send, recv, "run_command", {"command": "echo [$WHO]", "chat_id": cid}, 5)
+        assert "[main]" in r["result"]["content"][0]["text"]
+
+        r = _call(send, recv, "run_command",
+                  {"command": "echo [$WHO]", "chat_id": cid, "session": "other"}, 6)
+        assert "[other]" in r["result"]["content"][0]["text"]
     finally:
         proc.terminate()
 
@@ -161,5 +197,60 @@ def test_run_command_requires_chat_id() -> None:
         cid = _init_chat(send, recv, 2)
         r2 = _call(send, recv, "run_command", {"command": "echo ok-isolated", "chat_id": cid}, 3)
         assert "ok-isolated" in r2["result"]["content"][0]["text"]
+    finally:
+        proc.terminate()
+
+
+def test_background_returns_before_the_command_finishes() -> None:
+    """is_background is the agent saying it will not wait — so don't make it."""
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        started = time.monotonic()
+        r = _call(send, recv, "run_command",
+                  {"command": "sleep 30", "chat_id": cid, "is_background": True}, 2)
+        elapsed = time.monotonic() - started
+        assert "Running in session 'bg_" in r["result"]["content"][0]["text"]
+        assert elapsed < 8, f"background launch took {elapsed:.1f}s"
+    finally:
+        proc.terminate()
+
+
+def test_background_still_reports_an_immediate_failure() -> None:
+    """The short budget must not cost the agent the news that the command died."""
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        r = _call(send, recv, "run_command",
+                  {"command": "nosuchbinary --go", "chat_id": cid, "is_background": True}, 2)
+        text = r["result"]["content"][0]["text"]
+        assert "not found" in text
+        assert "exit code = 127" in text
+    finally:
+        proc.terminate()
+
+
+def test_duplicate_background_commands_run_side_by_side() -> None:
+    """Same command, same cwd, twice: the agent wants two workers, not a refusal.
+
+    The session name is derived from cwd+command so a re-run lands back in the
+    same shell rather than leaking a new one — but only if that shell is free.
+    """
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        names = []
+        for i in (2, 3):
+            r = _call(send, recv, "run_command",
+                      {"command": "sleep 20", "chat_id": cid, "is_background": True}, i)
+            text = r["result"]["content"][0]["text"]
+            names.append(text.split("Running in session '")[1].split("'")[0])
+
+        assert names[0] != names[1], "a busy bg session must not be reused"
+
+        roster = _call(send, recv, "list_sessions", {"chat_id": cid}, 4)
+        roster_text = roster["result"]["content"][0]["text"]
+        for name in names:
+            assert f"{name}: running" in roster_text, f"{name} should be running"
     finally:
         proc.terminate()

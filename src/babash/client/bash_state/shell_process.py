@@ -1,12 +1,12 @@
+import logging
 import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
-import traceback
-from dataclasses import dataclass
 from hashlib import md5
 from typing import Optional
 
@@ -17,26 +17,33 @@ import pyte.modes as pyte_modes
 
 from ...types_ import Console
 
-PROMPT_CONST = re.compile(r"◉ ([^\n]*)──➤")
-PROMPT_COMMAND = "printf '◉ '\"$(pwd)\"'──➤'' \r\\e[2K'"
+logger = logging.getLogger("babash")
+
+# The prompt is the sentinel. PROMPT_COMMAND runs after every command and prints
+# `◉ <exit code>|<cwd>──➤`, then `\r\e[2K` wipes the line so the user never sees
+# it. Matching it tells us three things at once: that the command finished, what
+# it exited with, and where the shell now is — so none of that has to be tracked
+# by hand or scraped out of the command's own output.
+#
+# `__babash_ec=$?` must be the first thing executed: the `$(pwd)` substitution
+# below is itself a command and would otherwise clobber `$?`. The cwd is passed
+# as a printf *argument*, not spliced into the format string, so a directory
+# containing a `%` can't corrupt the prompt.
+PROMPT_CONST = re.compile(r"◉ (\d+)\|([^\n]*)──➤")
+PROMPT_COMMAND = "__babash_ec=$?; printf '◉ %s|%s──➤ \r\\e[2K' \"$__babash_ec\" \"$(pwd)\""
 PROMPT_STATEMENT = ""
 
 
-@dataclass
-class Config:
-    timeout: float = 5
-    timeout_while_output: float = 20
-    output_wait_patience: float = 3
+# Two timeouts that have nothing to do with how long a *command* may run, and
+# which used to share a value with it — so turning the command budget down for
+# responsiveness also gave a shell two seconds to source ~/.bashrc, after which
+# it silently fell back to --norc.
+SUBPROCESS_TIMEOUT = 5.0
+"""For the small `screen`/`which`/`getconf` calls babash shells out to."""
 
-    def update(
-        self, timeout: float, timeout_while_output: float, output_wait_patience: float
-    ) -> None:
-        self.timeout = timeout
-        self.timeout_while_output = timeout_while_output
-        self.output_wait_patience = output_wait_patience
-
-
-CONFIG = Config()
+SHELL_STARTUP_TIMEOUT = 15.0
+"""For a shell to boot, source its rc file, and print its first prompt. Generous:
+an rc file can be slow, and getting this wrong costs the user their shell config."""
 
 
 def is_mac() -> bool:
@@ -47,169 +54,86 @@ def get_tmpdir() -> str:
     current_tmpdir = os.environ.get("TMPDIR", "")
     if current_tmpdir or not is_mac():
         return tempfile.gettempdir()
-    try:
-        result = subprocess.check_output(
-            ["getconf", "DARWIN_USER_TEMP_DIR"],
-            text=True,
-            timeout=CONFIG.timeout,
-        ).strip()
-        return result
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "//tmp"
-    except Exception:
-        return tempfile.gettempdir()
+    return _run(["getconf", "DARWIN_USER_TEMP_DIR"], SUBPROCESS_TIMEOUT).strip() or tempfile.gettempdir()
 
 
 def check_if_screen_command_available() -> bool:
-    try:
-        subprocess.run(
-            ["which", "screen"],
-            capture_output=True,
-            check=True,
-            timeout=CONFIG.timeout,
-        )
-
-        home_dir = os.path.expanduser("~")
-        screenrc_path = os.path.join(home_dir, ".screenrc")
-
-        if not os.path.exists(screenrc_path):
-            screenrc_content = """defscrollback 10000
-termcapinfo xterm* ti@:te@
-"""
-            with open(screenrc_path, "w") as f:
-                f.write(screenrc_content)
-
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError, TimeoutError):
+    """Whether `screen` is installed, ensuring it has a usable .screenrc if so."""
+    if shutil.which("screen") is None:
         return False
+
+    screenrc = os.path.join(os.path.expanduser("~"), ".screenrc")
+    if not os.path.exists(screenrc):
+        try:
+            with open(screenrc, "w") as f:
+                f.write("defscrollback 10000\ntermcapinfo xterm* ti@:te@\n")
+        except OSError as e:
+            # A missing .screenrc costs us scrollback, not correctness.
+            logger.debug("could not write %s: %s", screenrc, e)
+    return True
+
+
+def _run(args: list[str], timeout: float) -> str:
+    """Run a short command and return its output, or "" if it could not run.
+
+    `screen` writes its session list to stderr on some platforms and stdout on
+    others, so both are taken. capture_output is not optional: this process
+    speaks MCP JSON-RPC over stdout, and one stray line from a subprocess
+    corrupts the channel.
+    """
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("%s failed: %s", args[0], e)
+        return ""
+    return result.stdout or result.stderr or ""
 
 
 def get_babash_screen_sessions() -> list[str]:
-    """Get a list of all babash screen session IDs."""
-    screen_sessions = []
+    """Every screen session babash has ever started, as `screen -ls` names them."""
+    return [
+        session
+        for session in (line.split()[0] for line in _run(["screen", "-ls"], 0.5).splitlines() if line.split())
+        if ".babash." in session
+    ]
 
+
+def _session_pid(session_id: str) -> Optional[int]:
+    """The pid `screen` embeds at the front of a session name, if it is one."""
+    head = session_id.split(".", 1)[0]
+    return int(head) if head.isdigit() else None
+
+
+def _is_orphaned(pid: int) -> bool:
+    """Whether the process that owns a screen session is gone.
+
+    Two ways for that to be true, and NoSuchProcess is one of them rather than an
+    error to be swallowed: if the owner has exited outright, the session is
+    orphaned by definition. If it merely died and left the session behind, screen
+    gets reparented to init.
+    """
     try:
-        result = subprocess.run(
-            ["screen", "-ls"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=0.5,
-        )
-        output = result.stdout or result.stderr or ""
-
-        for line in output.splitlines():
-            line = line.strip()
-            if not line or not line[0].isdigit():
-                continue
-
-            session_parts = line.split()
-            if not session_parts:
-                continue
-
-            session_id = session_parts[0].strip()
-
-            if ".babash." in session_id:
-                screen_sessions.append(session_id)
-    except Exception:
-        pass
-
-    return screen_sessions
+        return psutil.Process(pid).ppid() == 1
+    except psutil.NoSuchProcess:
+        return True
 
 
 def get_orphaned_babash_screens() -> list[str]:
-    """Identify orphaned babash screen sessions where the parent process has PID 1 or doesn't exist."""
-    orphaned_screens = []
-
-    try:
-        screen_sessions = get_babash_screen_sessions()
-
-        for session_id in screen_sessions:
-            try:
-                pid = int(session_id.split(".")[0])
-
-                try:
-                    process = psutil.Process(pid)
-                    parent_pid = process.ppid()
-
-                    if parent_pid == 1:
-                        orphaned_screens.append(session_id)
-                except psutil.NoSuchProcess:
-                    orphaned_screens.append(session_id)
-            except (ValueError, IndexError):
-                continue
-    except Exception:
-        pass
-
-    return orphaned_screens
+    """babash screen sessions whose owning process is no longer around."""
+    pids = ((session, _session_pid(session)) for session in get_babash_screen_sessions())
+    return [session for session, pid in pids if pid is not None and _is_orphaned(pid)]
 
 
 def cleanup_orphaned_babash_screens(console: Console) -> None:
-    """Clean up all orphaned babash screen sessions."""
-    orphaned_sessions = get_orphaned_babash_screens()
-
-    if not orphaned_sessions:
+    orphaned = get_orphaned_babash_screens()
+    if not orphaned:
         return
 
-    console.log(
-        f"Found {len(orphaned_sessions)} orphaned babash screen sessions to clean up"
-    )
-
-    for session in orphaned_sessions:
-        try:
-            # capture_output keeps screen's diagnostics off our stdout —
-            # this is the MCP JSON-RPC channel and any stray line corrupts it.
-            subprocess.run(
-                ["screen", "-S", session, "-X", "quit"],
-                check=False,
-                capture_output=True,
-                timeout=CONFIG.timeout,
-            )
-        except Exception as e:
-            console.log(f"Failed to kill orphaned screen session: {session}\n{e}")
-
-
-def cleanup_all_screens_with_name(name: str, console: Console) -> None:
-    """Clear all screens with the given name."""
-    try:
-        result = subprocess.run(
-            ["screen", "-ls"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CONFIG.timeout,
-        )
-        output = result.stdout
-    except subprocess.CalledProcessError as e:
-        output = (e.stdout or "") + (e.stderr or "")
-    except FileNotFoundError:
-        return
-    except Exception as e:
-        console.log(f"{e}: exception while clearing running screens.")
-        return
-
-    sessions_to_kill = []
-
-    for line in output.splitlines():
-        line = line.strip()
-        if not line or not line[0].isdigit():
-            continue
-
-        session_info = line.split()[0].strip()
-        if session_info.endswith(f".{name}"):
-            sessions_to_kill.append(session_info)
-
-    for session in sessions_to_kill:
-        try:
-            # capture_output: same stdout-hygiene reason as above.
-            subprocess.run(
-                ["screen", "-S", session, "-X", "quit"],
-                check=True,
-                capture_output=True,
-                timeout=CONFIG.timeout,
-            )
-        except Exception as e:
-            console.log(f"Failed to kill screen session: {session}\n{e}")
+    console.log(f"Found {len(orphaned)} orphaned babash screen sessions to clean up")
+    for session in orphaned:
+        _run(["screen", "-S", session, "-X", "quit"], SUBPROCESS_TIMEOUT)
 
 
 def get_rc_file_path(shell_path: str) -> Optional[str]:
@@ -225,71 +149,100 @@ def get_rc_file_path(shell_path: str) -> Optional[str]:
         return None
 
 
+MARKER_START = "# --BABASH_ENVIRONMENT_START--"
+MARKER_END = "# --BABASH_ENVIRONMENT_END--"
+
+# Same sentinel as PROMPT_COMMAND, requoted for embedding in an rc file: the
+# outer quotes are single, so every quote inside has to be double.
+_RC_PROMPT_COMMAND = (
+    '__babash_ec=$?; printf "◉ %s|%s──➤ \\r\\e[2K" "$__babash_ec" "$(pwd)"'
+)
+
+
+def babash_rc_block(shell_name: str) -> Optional[str]:
+    """The block babash keeps in the user's rc file, or None for shells we don't
+    know how to configure. Only the interactive shells babash itself spawns pick
+    it up — the `IN_BABASH_ENVIRONMENT` guard keeps it out of the user's own."""
+    if shell_name == "zsh":
+        body = f""" PROMPT_COMMAND='{_RC_PROMPT_COMMAND}'
+ prmptcmdbabash() {{ eval "$PROMPT_COMMAND" }}
+ add-zsh-hook -d precmd prmptcmdbabash
+ precmd_functions+=prmptcmdbabash"""
+    elif shell_name == "bash":
+        body = f""" PROMPT_COMMAND='{_RC_PROMPT_COMMAND}'"""
+    else:
+        return None
+
+    return f"""{MARKER_START}
+if [ -n "$IN_BABASH_ENVIRONMENT" ]; then
+{body}
+fi
+{MARKER_END}
+"""
+
+
 def ensure_babash_block_in_rc_file(shell_path: str, console: Console) -> None:
-    """Ensure the babash environment block exists in the appropriate rc file."""
+    """Install babash's block in the rc file, or rewrite it if it's out of date.
+
+    Rewriting matters: the block pins the prompt sentinel, and a machine that
+    installed an older babash already has a block with the older sentinel in it.
+    Bailing out on "marker already present" — which is what this used to do —
+    would leave that stale prompt in place forever, and the new PROMPT_CONST
+    would never match it.
+    """
     rc_file_path = get_rc_file_path(shell_path)
     if not rc_file_path:
         return
 
-    shell_name = os.path.basename(shell_path)
-
-    marker_start = "# --BABASH_ENVIRONMENT_START--"
-    marker_end = "# --BABASH_ENVIRONMENT_END--"
-
-    if shell_name == "zsh":
-        babash_block = f"""{marker_start}
-if [ -n "$IN_BABASH_ENVIRONMENT" ]; then
- PROMPT_COMMAND='printf "◉ $(pwd)──➤ \\r\\e[2K"'
- prmptcmdbabash() {{ eval "$PROMPT_COMMAND" }}
- add-zsh-hook -d precmd prmptcmdbabash
- precmd_functions+=prmptcmdbabash
-fi
-{marker_end}
-"""
-    elif shell_name == "bash":
-        babash_block = f"""{marker_start}
-if [ -n "$IN_BABASH_ENVIRONMENT" ]; then
- PROMPT_COMMAND='printf "◉ $(pwd)──➤ \\r\\e[2K"'
-fi
-{marker_end}
-"""
-    else:
-        return
-
-    if not os.path.exists(rc_file_path):
-        try:
-            with open(rc_file_path, "w") as f:
-                f.write(babash_block)
-            console.log(f"Created {rc_file_path} with babash environment block")
-        except Exception as e:
-            console.log(f"Failed to create {rc_file_path}: {e}")
+    babash_block = babash_rc_block(os.path.basename(shell_path))
+    if babash_block is None:
         return
 
     try:
         with open(rc_file_path) as f:
             content = f.read()
+    except OSError:
+        content = ""
 
-        if marker_start in content:
+    start = content.find(MARKER_START)
+    end = content.find(MARKER_END)
+    if start != -1 and end > start:
+        existing = content[start : end + len(MARKER_END)]
+        if existing.strip() == babash_block.strip():
             return
+        updated = content[:start] + babash_block.strip() + content[end + len(MARKER_END) :]
+        action = f"Updated babash environment block in {rc_file_path}"
+    elif content:
+        updated = content + "\n" + babash_block
+        action = f"Added babash environment block to {rc_file_path}"
+    else:
+        updated = babash_block
+        action = f"Created {rc_file_path} with babash environment block"
 
-        with open(rc_file_path, "a") as f:
-            f.write("\n" + babash_block)
-        console.log(f"Added babash environment block to {rc_file_path}")
-    except Exception as e:
+    try:
+        with open(rc_file_path, "w") as f:
+            f.write(updated)
+        console.log(action)
+    except OSError as e:
         console.log(f"Failed to update {rc_file_path}: {e}")
 
 
 def start_shell(
-    is_restricted_mode: bool,
     initial_dir: str,
     console: Console,
     over_screen: bool,
     shell_path: str,
     unique_id: str,
-) -> tuple["pexpect.spawn[str]", str]:
+) -> tuple["pexpect.spawn[str]", Optional[str]]:
+    """Spawn a shell and return it, with the name of the screen session wrapping
+    it — or None if it isn't wrapped in one.
+
+    `over_screen` is a preference, not a demand: if `screen` isn't installed we
+    simply don't use it, and say so in the return value. It used to raise
+    ValueError for that, which meant the caller had to catch an exception to
+    learn a fact it could have been told.
+    """
     cmd = shell_path
-    if is_restricted_mode and cmd.split("/")[-1] == "bash":
-        cmd += " -r"
 
     overrideenv = {
         **os.environ,
@@ -306,27 +259,30 @@ def start_shell(
             env=overrideenv,
             echo=True,
             encoding="utf-8",
-            timeout=CONFIG.timeout,
+            timeout=SHELL_STARTUP_TIMEOUT,
             cwd=initial_dir,
             codec_errors="backslashreplace",
             dimensions=(500, 160),
         )
         shell.sendline(PROMPT_STATEMENT)
-        shell.expect(PROMPT_CONST, timeout=CONFIG.timeout)
-    except Exception as e:
-        console.print(traceback.format_exc())
-        console.log(f"Error starting shell: {e}. Retrying without rc ...")
+        shell.expect(PROMPT_CONST, timeout=SHELL_STARTUP_TIMEOUT)
+    except (pexpect.ExceptionPexpect, OSError) as e:
+        # The prompt never arrived, which means the rc file did not install it —
+        # it errored, or hung, or the shell isn't one we know how to configure.
+        # A bare shell with no rc still gives us a working, promptable terminal;
+        # the user just loses their aliases in it.
+        console.log(f"Shell did not reach a babash prompt ({e}). Retrying without rc.")
 
         shell = pexpect.spawn(
             "/bin/bash --noprofile --norc",
             env=overrideenv,
             echo=True,
             encoding="utf-8",
-            timeout=CONFIG.timeout,
+            timeout=SHELL_STARTUP_TIMEOUT,
             codec_errors="backslashreplace",
         )
         shell.sendline(PROMPT_STATEMENT)
-        shell.expect(PROMPT_CONST, timeout=CONFIG.timeout)
+        shell.expect(PROMPT_CONST, timeout=SHELL_STARTUP_TIMEOUT)
 
     initialdir_hash = md5(
         os.path.normpath(os.path.abspath(initial_dir)).encode()
@@ -334,22 +290,25 @@ def start_shell(
     # unique_id (the owning BashState's thread_id) guarantees a distinct screen
     # name per shell. Without it the name is just timestamp(second)+dir, so two
     # shells started in the same directory within the same second collide.
-    shellid = shlex.quote(
+    name = shlex.quote(
         "babash."
         + time.strftime("%d-%Hh%Mm%Ss")
         + f".{initialdir_hash[:3]}."
         + f"{unique_id}."
         + os.path.basename(initial_dir)
     )
-    if over_screen:
-        if not check_if_screen_command_available():
-            raise ValueError("Screen command not available")
-        while True:
-            output = shell.expect([PROMPT_CONST, pexpect.TIMEOUT], timeout=0.1)
-            if output == 1:
-                break
-        shell.sendline(f"screen -q -S {shellid} {shell_path}")
-        shell.expect(PROMPT_CONST, timeout=CONFIG.timeout)
+
+    screen_name: Optional[str] = None
+    if over_screen and not check_if_screen_command_available():
+        console.log("screen is not installed; running the shell directly.")
+    elif over_screen:
+        # Drain the outer shell's prompts before handing it to screen, or the
+        # inner shell's first prompt gets mixed up with them.
+        while shell.expect([PROMPT_CONST, pexpect.TIMEOUT], timeout=0.1) == 0:
+            pass
+        shell.sendline(f"screen -q -S {name} {shell_path}")
+        shell.expect(PROMPT_CONST, timeout=SHELL_STARTUP_TIMEOUT)
+        screen_name = name
 
     # Sync to a clean prompt before handing the shell back. A freshly started
     # shell (especially the inner shell screen spawns) briefly emits its own
@@ -357,7 +316,7 @@ def start_shell(
     # installs the babash prompt. If that leftover text is still buffered, the
     # very first real command matches it instead of its own output and comes
     # back empty. Send a blank line and drain every prompt (in short slices, so
-    # a missed prompt costs 0.3s, not the full CONFIG.timeout) until the buffer
+    # a missed prompt costs 0.3s, not the full startup timeout) until the buffer
     # goes quiet — the blank-line prompt match consumes the banner before it.
     # (Mirrors pexpect.pxssh.sync_original_prompt.)
     shell.sendline("")
@@ -365,20 +324,122 @@ def start_shell(
         if shell.expect([PROMPT_CONST, pexpect.TIMEOUT], timeout=0.3) == 1:
             break
 
-    return shell, shellid
+    return shell, screen_name
 
 
-def render_terminal_output(text: str) -> list[str]:
-    screen = pyte.Screen(160, 500)
-    screen.set_mode(pyte_modes.LNM)
-    stream = pyte.Stream(screen)
-    stream.feed(text)
-    # Filter out empty lines
-    dsp = screen.display[::-1]
-    for i, line in enumerate(dsp):
-        if line.strip():
-            break
-    else:
-        i = len(dsp)
-    lines = screen.display[: len(dsp) - i]
-    return lines
+def _incremental_lines(old_output: list[str], new_output: list[str]) -> list[str]:
+    """The tail of `new_output` that comes after `old_output`'s content.
+
+    Anchors on the last line of `old_output` and walks backwards to confirm the
+    rest lines up, which tolerates the screen having scrolled between renders.
+    """
+    nold = len(old_output)
+    nnew = len(new_output)
+    if not old_output:
+        return new_output
+    for i in range(nnew - 1, -1, -1):
+        if new_output[i] != old_output[-1]:
+            continue
+        for j in range(i - 1, -1, -1):
+            if (nold - 1 + j - i) < 0:
+                break
+            if new_output[j] != old_output[-1 + j - i]:
+                break
+        else:
+            return new_output[i + 1 :]
+    return new_output
+
+
+class TerminalRenderer:
+    """Renders one shell's pty stream into screen lines, incrementally.
+
+    pyte's `Stream.feed()` is append-only by design: the `Screen` holds the
+    rendered grid and each feed applies only the bytes handed to it. So a
+    renderer is only expensive if you throw the Screen away and re-feed the
+    whole buffer every time you look at it — which is what babash used to do,
+    at ~230ms per poll on a 100KB buffer, to recompute a grid pyte already had.
+    Keeping the Screen alive and feeding it only the new bytes makes the cost
+    proportional to the *new* output (~20ms, and flat in buffer size).
+
+    That also retires a bug. Re-feeding meant capping the input at the last
+    100KB to bound the cost, while the offset used to find "what's new" was
+    still measured against the full, uncapped buffer — so once a command had
+    printed more than 100KB, the two disagreed, the slice came out empty, and
+    every subsequent poll reported no new output at all.
+
+    One renderer belongs to one shell and spans one command: `reset()` when a
+    command finishes, so the next one starts from a clean screen.
+    """
+
+    def __init__(self) -> None:
+        self._screen = pyte.Screen(160, 500)
+        self._screen.set_mode(pyte_modes.LNM)
+        self._stream = pyte.Stream(self._screen)
+        self._fed = 0
+        self._reported: list[str] = []
+
+    def reset(self) -> None:
+        self._screen.reset()
+        self._screen.set_mode(pyte_modes.LNM)
+        self._fed = 0
+        self._reported = []
+
+    def _display(self) -> list[str]:
+        """The screen with its trailing blank lines dropped."""
+        dsp = self._screen.display[::-1]
+        for i, line in enumerate(dsp):
+            if line.strip():
+                break
+        else:
+            i = len(dsp)
+        return self._screen.display[: len(dsp) - i]
+
+    def cursor_prompt(self) -> str | None:
+        """The partial line the cursor is sitting in, if it's sitting in one.
+
+        A program that has written `Select [1/2/3]: ` and is now blocked on read()
+        leaves the cursor parked partway along a line, with no newline after it.
+        That is what a prompt awaiting input looks like on a screen — and it is
+        the only thing that distinguishes it from a command that is merely slow,
+        since both simply stop producing output.
+
+        This is only the raw signal, not the verdict: a progress bar redrawing
+        itself also parks the cursor mid-line. `execute_bash` confirms it by
+        watching for a beat and seeing whether anything more arrives.
+        """
+        if self._screen.cursor.x == 0:
+            return None
+        line = self._screen.display[self._screen.cursor.y][: self._screen.cursor.x]
+        return line.strip() or None
+
+    def incremental(self, buffer: str) -> str:
+        """Output that has appeared since the last call.
+
+        `buffer` is everything the shell has emitted for the current command;
+        only its unseen tail is fed to pyte. A buffer shorter than what we've
+        already consumed means the pty buffer was rewound under us, so the
+        screen is rebuilt rather than fed a nonsensical delta.
+        """
+        if len(buffer) < self._fed:
+            self.reset()
+        self._stream.feed(buffer[self._fed :])
+        self._fed = len(buffer)
+
+        lines = self._display()
+        previous = self._reported
+        self._reported = lines
+
+        if not previous:
+            return _rstrip(lines).lstrip()
+
+        # Anchor on all but the last previously-reported line: the last one may
+        # have been incomplete (a progress bar mid-redraw) and grown since, in
+        # which case it has to be re-emitted rather than treated as already seen.
+        new_lines = _incremental_lines(previous[:-1], lines)
+        if new_lines and new_lines[0] == previous[-1]:
+            new_lines = new_lines[1:]
+        return _rstrip(new_lines)
+
+
+def _rstrip(lines: list[str]) -> str:
+    return "\n".join(line.rstrip() for line in lines)
