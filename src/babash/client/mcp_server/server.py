@@ -8,7 +8,7 @@ import shlex
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import metadata
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 from mcp.server.fastmcp import Context as McpContext
 from mcp.server.fastmcp import FastMCP
@@ -18,10 +18,15 @@ from babash.client.modes import KTS
 
 from ...types_ import (
     BashCommand,
+    Command,
     ContextSave,
     FileWriteOrEdit,
     Initialize,
     ReadFiles,
+    SendSpecials,
+    SendText,
+    Specials,
+    StatusCheck,
     WriteIfEmpty,
 )
 from ..bash_state import CONFIG, BashState, execute_bash, get_tmpdir
@@ -220,13 +225,14 @@ def _roster_footer(chat: ChatWorkspace) -> str:
 
 def _exec_in_session(shell: BashState, command: str) -> str:
     """Run a single-line command through a session shell and return output."""
-    bash_cmd = BashCommand.model_validate({
-        "type": "command",
-        "command": command,
-        "is_background": False,
-        "wait_for_seconds": None,
-        "thread_id": shell.current_thread_id,
-    })
+    bash_cmd = BashCommand(
+        action_json=Command(
+            command=command,
+            is_background=False,
+            wait_for_seconds=None,
+            thread_id=shell.current_thread_id,
+        )
+    )
     output, _ = execute_bash(shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None)
     return output
 
@@ -529,12 +535,11 @@ async def run_command(
     # forward progress (incremental output + current state) instead of retrying
     # the same command in a loop.
     if shell.state == "pending":
-        status_cmd = BashCommand.model_validate({
-            "type": "status_check",
-            "status_check": True,
-            "wait_for_seconds": None,
-            "thread_id": shell.current_thread_id,
-        })
+        status_cmd = BashCommand(
+            action_json=StatusCheck(
+                wait_for_seconds=None, thread_id=shell.current_thread_id
+            )
+        )
         status_out, _ = await anyio.to_thread.run_sync(
             execute_bash, shell, default_enc, status_cmd, NONCODING_MAX_TOKENS, None
         )
@@ -555,14 +560,13 @@ async def run_command(
         body = f"{header}\n\n--- new output ---\n{new_text}" if new_text else f"{header}\n\n(no new output yet)"
         return f"{body}\n\n{_roster_footer(chat)}"
 
-    bash_cmd = BashCommand.model_validate(
-        {
-            "type": "command",
-            "command": command,
-            "is_background": False,
-            "wait_for_seconds": None,
-            "thread_id": shell.current_thread_id,
-        }
+    bash_cmd = BashCommand(
+        action_json=Command(
+            command=command,
+            is_background=False,
+            wait_for_seconds=None,
+            thread_id=shell.current_thread_id,
+        )
     )
     output, _ = await anyio.to_thread.run_sync(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
@@ -623,13 +627,10 @@ async def check_status(
     capped_wait = (
         min(float(wait_for_seconds), 5.0) if wait_for_seconds else None
     )
-    bash_cmd = BashCommand.model_validate(
-        {
-            "type": "status_check",
-            "status_check": True,
-            "wait_for_seconds": capped_wait,
-            "thread_id": shell.current_thread_id,
-        }
+    bash_cmd = BashCommand(
+        action_json=StatusCheck(
+            wait_for_seconds=capped_wait, thread_id=shell.current_thread_id
+        )
     )
     output, _ = await anyio.to_thread.run_sync(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, capped_wait
@@ -688,11 +689,11 @@ async def send_input(
     if not text:
         return "Error: text cannot be empty. Use send_keys('Enter') to press Enter, or send_keys('Ctrl-c') to interrupt."
 
-    bash_cmd = BashCommand.model_validate({
-        "type": "send_text",
-        "send_text": text,
-        "thread_id": shell.current_thread_id,
-    })
+    bash_cmd = BashCommand(
+        action_json=SendText(
+            send_text=text, wait_for_seconds=None, thread_id=shell.current_thread_id
+        )
+    )
     output, _ = await anyio.to_thread.run_sync(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None
     )
@@ -727,13 +728,24 @@ async def send_keys(
         shell = chat.get_shell(session)
     except ValueError as e:
         return f"Error: {e}"
-    keys_list = [keys] if isinstance(keys, str) else keys
-    bash_cmd = BashCommand.model_validate(
-        {
-            "type": "send_specials",
-            "send_specials": keys_list,
-            "thread_id": shell.current_thread_id,
-        }
+    raw_keys = [keys] if isinstance(keys, str) else keys
+    # The tool takes free-form strings (that's what MCP clients send), but only
+    # the Specials literals are executable. Check here and say so plainly,
+    # rather than letting a pydantic ValidationError surface.
+    valid: tuple[str, ...] = get_args(Specials)
+    unknown = [k for k in raw_keys if k not in valid]
+    if unknown:
+        return (
+            f"Error: unknown key(s): {', '.join(unknown)}. "
+            f"Valid keys: {', '.join(valid)}."
+        )
+    keys_list = cast(list[Specials], raw_keys)
+    bash_cmd = BashCommand(
+        action_json=SendSpecials(
+            send_specials=keys_list,
+            wait_for_seconds=None,
+            thread_id=shell.current_thread_id,
+        )
     )
     output, _ = await anyio.to_thread.run_sync(
         execute_bash, shell, default_enc, bash_cmd, NONCODING_MAX_TOKENS, None

@@ -147,12 +147,6 @@ def execute_bash(
     return output, cost
 
 
-def assert_single_statement(command: str) -> None:
-    # No-op: all commands are allowed. Multi-line commands are handled
-    # by wrapping in bash -c in the caller.
-    pass
-
-
 def get_bg_running_commandsinfo(bash_state: "BashState") -> str:
     msg = ""
     running = []
@@ -200,8 +194,6 @@ def _execute_bash(
             bash_state.console.print(f"$ {command_data.command}")
 
             command = command_data.command.strip()
-
-            assert_single_statement(command)
 
             if command_data.is_background:
                 bash_state = bash_state.start_new_bg_shell(bash_state.cwd)

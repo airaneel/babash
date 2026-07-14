@@ -115,26 +115,26 @@ def get_stats_path(workspace_path: str) -> str:
     return os.path.join(stats_dir, filename)
 
 
-@safe_stats_operation
 def load_workspace_stats(workspace_path: str) -> WorkspaceStats:
     """
-    Load the stats for a workspace, or create empty stats if not exists.
+    Load the stats for a workspace, or empty stats if it is missing or unreadable.
 
-    Args:
-        workspace_path: The full path of the workspace directory.
+    Deliberately NOT wrapped in @safe_stats_operation: that decorator returns
+    None on failure while claiming to return WorkspaceStats, and every caller
+    goes straight to `stats.files[...]` — so a corrupt or unreadable stats file
+    turned into an AttributeError in the read/write path. Stats are best-effort
+    telemetry, so an unreadable file simply means "no stats yet".
 
     Returns:
-        WorkspaceStats object containing file operation statistics.
+        WorkspaceStats object containing file operation statistics. Never None.
     """
     stats_path = get_stats_path(workspace_path)
-    if os.path.exists(stats_path):
-        try:
-            with open(stats_path, "r") as f:
-                return WorkspaceStats.from_dict(json.load(f))
-        except (json.JSONDecodeError, KeyError, ValueError):
-            # Handle corrupted file
-            return WorkspaceStats()
-    else:
+    if not os.path.exists(stats_path):
+        return WorkspaceStats()
+    try:
+        with open(stats_path, "r") as f:
+            return WorkspaceStats.from_dict(json.load(f))
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
         return WorkspaceStats()
 
 
