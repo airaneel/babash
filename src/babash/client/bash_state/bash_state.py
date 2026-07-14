@@ -1,34 +1,20 @@
+"""One interactive shell, kept alive across tool calls."""
+
 import datetime
 import os
 import re
 import threading
-import traceback
 import time
-from hashlib import sha256
-from typing import (
-    Any,
-    Literal,
-    NamedTuple,
-    Optional,
-)
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import pexpect
 
-from ...types_ import (
-    Console,
-    Modes,
-)
-from ..modes import BashCommandMode, FileEditMode, WriteIfEmptyMode
-from .file_whitelist import FileWhitelistData
-from .persistence import (
-    generate_thread_id,
-    load_bash_state_by_id,
-    save_bash_state_by_id,
-)
+from ...settings import ShellTimings
+from ...types_ import Console
 from .shell_process import (
-    CONFIG,
     PROMPT_CONST,
+    TerminalRenderer,
     check_if_screen_command_available,
     cleanup_orphaned_babash_screens,
     ensure_babash_block_in_rc_file,
@@ -36,195 +22,57 @@ from .shell_process import (
     start_shell,
 )
 
-BASH_CLF_OUTPUT = Literal["repl", "pending"]
+ShellState = Literal["repl", "pending"]
+
+# A bound on how many trailing bytes we will swallow after a prompt. It only has
+# to cover the ` \r\e[2K` PROMPT_COMMAND prints; the cap is a backstop against
+# spinning forever if the pty is producing garbage.
+_MAX_PROMPT_TAIL_READS = 200
 
 
-class BashStateSnapshot(NamedTuple):
-    bash_command_mode: BashCommandMode
-    file_edit_mode: FileEditMode
-    write_if_empty_mode: WriteIfEmptyMode
-    mode: Modes
-    whitelist_for_overwrite: dict[str, Any]  # dict[str, FileWhitelistData] at runtime
-    workspace_root: str
-    thread_id: str
+def new_shell_id() -> str:
+    return f"i{uuid4().hex[:12]}"
 
 
 class BashState:
-    _use_screen: bool
-    _current_thread_id: str
+    """A pty running a shell, plus what we know about what it's doing.
+
+    The only state here is what genuinely cannot be derived: the pty itself, the
+    renderer's position in its output stream, whether a command is outstanding
+    and since when, and what the last one exited with. Everything else — the
+    cwd, the exit code — is read back out of the shell's own prompt rather than
+    tracked in parallel with it.
+    """
+
+    _last_exit_code: Optional[int]
 
     def __init__(
         self,
         console: Console,
         working_dir: str,
-        bash_command_mode: Optional[BashCommandMode],
-        file_edit_mode: Optional[FileEditMode],
-        write_if_empty_mode: Optional[WriteIfEmptyMode],
-        mode: Optional[Modes],
         use_screen: bool,
-        whitelist_for_overwrite: Optional[dict[str, "FileWhitelistData"]],
-        thread_id: Optional[str],
+        shell_id: Optional[str],
         shell_path: Optional[str],
+        timings: ShellTimings,
     ) -> None:
         self.last_command: str = ""
         self.console = console
+        self.timings = timings
         self._cwd = working_dir or os.getcwd()
-        self._workspace_root = working_dir or os.getcwd()
-        self._bash_command_mode: BashCommandMode = bash_command_mode or BashCommandMode(
-            "normal_mode", "all"
-        )
-        self._file_edit_mode: FileEditMode = file_edit_mode or FileEditMode("all")
-        self._write_if_empty_mode: WriteIfEmptyMode = (
-            write_if_empty_mode or WriteIfEmptyMode("all")
-        )
-        self._mode: Modes = mode or "babash"
-        self._whitelist_for_overwrite: dict[str, FileWhitelistData] = (
-            whitelist_for_overwrite or {}
-        )
-        self._current_thread_id = (
-            thread_id if thread_id is not None else generate_thread_id()
-        )
-        self._bg_expect_thread: Optional[threading.Thread] = None
-        self._bg_expect_thread_stop_event = threading.Event()
+        self._shell_id = shell_id if shell_id is not None else new_shell_id()
+        self._idle_reader: Optional[threading.Thread] = None
+        self._idle_reader_stop = threading.Event()
         self._use_screen = use_screen
-        self._shell_path: str = (
-            shell_path if shell_path else os.environ.get("SHELL", "/bin/bash")
-        )
+        self._shell_path: str = shell_path or os.environ.get("SHELL", "/bin/bash")
         if get_rc_file_path(self._shell_path) is None:
             console.log(
                 f"Warning: Unsupported shell: {self._shell_path}, defaulting to /bin/bash"
             )
             self._shell_path = "/bin/bash"
 
-        self.background_shells = dict[str, BashState]()
         self._init_shell()
 
-    def start_new_bg_shell(self, working_dir: str) -> "BashState":
-        cid = uuid4().hex[:10]
-        state = BashState(
-            self.console,
-            working_dir=working_dir,
-            bash_command_mode=self.bash_command_mode,
-            file_edit_mode=self.file_edit_mode,
-            write_if_empty_mode=self.write_if_empty_mode,
-            mode=self.mode,
-            use_screen=self.over_screen,
-            whitelist_for_overwrite=None,
-            thread_id=cid,
-            shell_path=self._shell_path,
-        )
-        self.background_shells[cid] = state
-        return state
-
-    def expect(
-        self, pattern: Any, timeout: Optional[float] = -1, flush_rem_prompt: bool = True
-    ) -> int:
-        self.close_bg_expect_thread()
-        try:
-            output = self._shell.expect(pattern, timeout)
-            if isinstance(self._shell.match, re.Match) and self._shell.match.groups():
-                cwd = self._shell.match.group(1)
-                if cwd.strip():
-                    self._cwd = cwd
-                    if flush_rem_prompt:
-                        temp_before = self._shell.before
-                        self.flush_prompt()
-                        self._shell.before = temp_before
-        except pexpect.TIMEOUT:
-            return 1
-        return int(output)
-
-    def flush_prompt(self) -> None:
-        for _ in range(200):
-            try:
-                output = self.expect([" ", pexpect.TIMEOUT], 0.1)
-                if output == 1:
-                    return
-            except pexpect.TIMEOUT:
-                return
-
-    def send(self, s: str | bytes, set_as_command: Optional[str]) -> int:
-        if set_as_command is not None:
-            self.last_command = set_as_command
-        output = self._shell.send(s)
-        return int(output)
-
-    def sendline(self, s: str | bytes, set_as_command: Optional[str]) -> int:
-        if set_as_command is not None:
-            self.last_command = set_as_command
-        output = self._shell.sendline(s)
-        return int(output)
-
-    @property
-    def linesep(self) -> str:
-        return str(self._shell.linesep)
-
-    def sendintr(self) -> None:
-        self.close_bg_expect_thread()
-        self._shell.sendintr()
-
-    @property
-    def before(self) -> Optional[str]:
-        before = self._shell.before
-        if before and before.startswith(self.last_command):
-            return str(before[len(self.last_command) :])
-        return str(before) if before else None
-
-    def run_bg_expect_thread(self) -> None:
-        """Run background expect thread for handling shell interactions."""
-
-        def _bg_expect_thread_handler() -> None:
-            while True:
-                if self._bg_expect_thread_stop_event.is_set():
-                    break
-                output = self._shell.expect([pexpect.EOF, pexpect.TIMEOUT], timeout=0.1)
-                if output == 0:
-                    break
-
-        if self._bg_expect_thread:
-            self.close_bg_expect_thread()
-
-        self._bg_expect_thread = threading.Thread(
-            target=_bg_expect_thread_handler,
-        )
-        self._bg_expect_thread.start()
-        for _k, v in self.background_shells.items():
-            v.run_bg_expect_thread()
-
-    def close_bg_expect_thread(self) -> None:
-        if self._bg_expect_thread:
-            self._bg_expect_thread_stop_event.set()
-            self._bg_expect_thread.join()
-            self._bg_expect_thread = None
-            self._bg_expect_thread_stop_event = threading.Event()
-        for _k, v in self.background_shells.items():
-            v.close_bg_expect_thread()
-
-    def cleanup(self) -> None:
-        self.close_bg_expect_thread()
-        self._shell.close(True)
-
-    def __enter__(self) -> "BashState":
-        return self
-
-    def __exit__(self, exc_type: Any, exc_value: Any, tb: Any) -> None:
-        self.cleanup()
-
-    @property
-    def mode(self) -> Modes:
-        return self._mode
-
-    @property
-    def bash_command_mode(self) -> BashCommandMode:
-        return self._bash_command_mode
-
-    @property
-    def file_edit_mode(self) -> FileEditMode:
-        return self._file_edit_mode
-
-    @property
-    def write_if_empty_mode(self) -> WriteIfEmptyMode:
-        return self._write_if_empty_mode
+    # --- lifecycle ---
 
     def _init_shell(self) -> None:
         self._state: Literal["repl"] | datetime.datetime = "repl"
@@ -237,40 +85,46 @@ class BashState:
             cleanup_orphaned_babash_screens(self.console)
 
         self.__shell: pexpect.spawn[str] | None = None
-        self.__shell_id: str | None = None
-        self._over_screen: bool | None = None
+        self.__screen_name: str | None = None
 
         def _start() -> None:
-            try:
-                self.__shell, self.__shell_id = start_shell(
-                    self._bash_command_mode.bash_mode == "restricted_mode",
-                    self._cwd,
-                    self.console,
-                    over_screen=self._use_screen,
-                    shell_path=self._shell_path,
-                    unique_id=self._current_thread_id,
-                )
-                self._over_screen = self._use_screen
-            except Exception as e:
-                if not isinstance(e, ValueError):
-                    self.console.log(traceback.format_exc())
-                self.console.log("Retrying without using screen")
-                self.__shell, self.__shell_id = start_shell(
-                    self._bash_command_mode.bash_mode == "restricted_mode",
-                    self._cwd,
-                    self.console,
-                    over_screen=False,
-                    shell_path=self._shell_path,
-                    unique_id=self._current_thread_id,
-                )
-                self._over_screen = False
+            # start_shell decides for itself whether screen is usable and reports
+            # back by naming the session it made, or not naming one. There is no
+            # failure to catch here: asking for screen where there is none is a
+            # preference that goes unmet, not an error.
+            self.__shell, self.__screen_name = start_shell(
+                self._cwd,
+                self.console,
+                over_screen=self._use_screen,
+                shell_path=self._shell_path,
+                unique_id=self._shell_id,
+            )
 
+        # Spawning a pty is slow enough to be worth overlapping with whatever the
+        # caller does next; `_shell` blocks on this thread the moment anyone
+        # actually needs the shell.
         self._init_thread = threading.Thread(target=_start)
         self._init_thread.start()
 
-        self._pending_output = ""
+        self._renderer = TerminalRenderer()
+        self._last_exit_code = None
+        self._awaiting_input: str | None = None
 
-        self.run_bg_expect_thread()
+        self.start_idle_reader()
+
+    def reset_shell(self) -> None:
+        self.cleanup()
+        self._init_shell()
+
+    def cleanup(self) -> None:
+        self.stop_idle_reader()
+        self._shell.close(True)
+
+    def __enter__(self) -> "BashState":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, tb: Any) -> None:
+        self.cleanup()
 
     @property
     def _shell(self) -> "pexpect.spawn[str]":
@@ -280,235 +134,215 @@ class BashState:
         return self.__shell
 
     @property
-    def _shell_id(self) -> str:
-        if self.__shell_id is None:
-            self._init_thread.join()
-            assert self.__shell_id
-        return self.__shell_id
+    def over_screen(self) -> bool:
+        """Whether this shell ended up wrapped in a screen session. Derived from
+        whether one got named, rather than tracked alongside it."""
+        self._init_thread.join()
+        return self.__screen_name is not None
 
     @property
-    def over_screen(self) -> bool:
-        if self._over_screen is None:
-            self._init_thread.join()
-            assert self._over_screen is not None
-            return self._over_screen
-        return self._over_screen
+    def shell_id(self) -> str:
+        return self._shell_id
 
-    def set_pending(self, last_pending_output: str) -> None:
-        if not isinstance(self._state, datetime.datetime):
-            self._state = datetime.datetime.now()
-        self._pending_output = last_pending_output
+    # --- talking to the pty ---
 
-    def set_repl(self) -> None:
-        self._state = "repl"
-        self._pending_output = ""
-        self.last_command = ""
+    def expect(
+        self, pattern: Any, timeout: Optional[float] = -1, flush_rem_prompt: bool = True
+    ) -> int:
+        """Wait for one of `pattern`, and return the index of what matched.
+
+        This never raises on a timeout — it returns 1, the index callers give
+        `pexpect.TIMEOUT` in their pattern list. Which is why nothing that calls
+        it needs to guard against TIMEOUT, and nothing does.
+        """
+        self.stop_idle_reader()
+        try:
+            index = int(self._shell.expect(pattern, timeout))
+        except pexpect.TIMEOUT:
+            return 1
+
+        match = self._shell.match
+        # Only a prompt match has groups (see PROMPT_CONST); everything else is a
+        # plain pattern with nothing to say.
+        if isinstance(match, re.Match) and match.groups():
+            self._read_prompt(match, flush_rem_prompt)
+        return index
+
+    def _read_prompt(self, match: re.Match[str], flush_tail: bool) -> None:
+        """Take the finished command's exit code and cwd out of the prompt."""
+        self._last_exit_code = int(match.group(1))
+        cwd = match.group(2)
+        if not cwd.strip():
+            return
+        self._cwd = cwd
+        if not flush_tail:
+            return
+
+        # Draining reads more from the pty, and pexpect overwrites `before` when
+        # it does — but `before` is the command output the caller is waiting for.
+        # Put it back.
+        before = self._shell.before
+        self._drain_prompt_tail()
+        self._shell.before = before
+
+    def _drain_prompt_tail(self) -> None:
+        """Swallow the bytes the prompt prints after its sentinel.
+
+        PROMPT_COMMAND emits ` \\r\\e[2K` once it has written `──➤`, to wipe the
+        line. Left in the buffer, that trailing run would be read back as the
+        start of the next command's output.
+        """
+        for _ in range(_MAX_PROMPT_TAIL_READS):
+            if self.expect([" ", pexpect.TIMEOUT], 0.1) == 1:
+                return
+
+    def send(self, s: str | bytes, set_as_command: Optional[str]) -> int:
+        if set_as_command is not None:
+            self.last_command = set_as_command
+        return int(self._shell.send(s))
+
+    def sendintr(self) -> None:
+        self.stop_idle_reader()
+        self._shell.sendintr()
+
+    @property
+    def linesep(self) -> str:
+        return str(self._shell.linesep)
+
+    @property
+    def before(self) -> Optional[str]:
+        before = self._shell.before
+        if before and before.startswith(self.last_command):
+            return str(before[len(self.last_command) :])
+        return str(before) if before else None
+
+    @property
+    def prompt(self) -> re.Pattern[str]:
+        return PROMPT_CONST
 
     def clear_to_run(self) -> None:
-        """Check if prompt is clear to enter new command otherwise send ctrl c"""
-        starttime = time.time()
-        self.close_bg_expect_thread()
+        """Get the pty to a clean prompt before a new command goes in.
+
+        Whatever a previous command left unread would otherwise come back as the
+        new one's output. Two things can be in the way: leftover prompts, which
+        are simply consumed, and a program still writing, which has to be
+        interrupted. If neither clears, the shell is wedged and gets restarted —
+        losing its cwd and env is bad, but far less bad than answering the next
+        command with the last one's output.
+        """
+        deadline = time.time() + self.timings.command_budget
+        self.stop_idle_reader()
         try:
-            while True:
-                try:
-                    output = self.expect(
-                        [PROMPT_CONST, pexpect.TIMEOUT], 0.1, flush_rem_prompt=False
-                    )
-                    if output == 1:
-                        break
-                except pexpect.TIMEOUT:
-                    break
-                if time.time() - starttime > CONFIG.timeout:
+            # expect() returns 0 for a prompt and 1 for "nothing more came" —
+            # so this drains prompts until the buffer goes quiet.
+            while self.expect([PROMPT_CONST, pexpect.TIMEOUT], 0.1, flush_rem_prompt=False) == 0:
+                if time.time() > deadline:
                     self.console.log(
-                        f"Error: could not clear output in {CONFIG.timeout} seconds. Resetting"
+                        f"Could not clear output in {self.timings.command_budget}s. Resetting."
                     )
                     self.reset_shell()
                     return
-            output = self.expect([" ", pexpect.TIMEOUT], 0.1)
-            if output != 1:
-                self.send("\x03", None)
 
-                output = self.expect([PROMPT_CONST, pexpect.TIMEOUT], CONFIG.timeout)
-                if output == 1:
-                    self.console.log("Error: could not clear output. Resetting")
+            # Still bytes arriving with no prompt behind them: something is
+            # running. Interrupt it and wait for the prompt that follows.
+            if self.expect([" ", pexpect.TIMEOUT], 0.1) != 1:
+                self.send("\x03", None)
+                if self.expect([PROMPT_CONST, pexpect.TIMEOUT], self.timings.command_budget) == 1:
+                    self.console.log("Could not clear output after Ctrl-c. Resetting.")
                     self.reset_shell()
         finally:
-            self.run_bg_expect_thread()
+            self.start_idle_reader()
+
+    # --- the idle reader ---
+    #
+    # A pty has a finite kernel buffer. A command that keeps printing while no
+    # tool call is reading will fill it and then block — the command stops making
+    # progress, not because it is slow, but because nobody is listening. Between
+    # calls, this thread is the listener.
+    #
+    # It doesn't consume anything: pexpect keeps what it read in the buffer when
+    # a wait times out (`spawn.before = spawn._before.getvalue()`), so the next
+    # real expect() still sees every byte. It only keeps the pipe flowing.
+
+    def _drain_idle_pty(self) -> None:
+        while not self._idle_reader_stop.is_set():
+            if self._shell.expect([pexpect.EOF, pexpect.TIMEOUT], timeout=0.1) == 0:
+                return  # the shell is gone; nothing left to drain
+
+    def start_idle_reader(self) -> None:
+        """Start the idle reader. Safe to call when one is already running."""
+        self.stop_idle_reader()
+        self._idle_reader = threading.Thread(target=self._drain_idle_pty, daemon=True)
+        self._idle_reader.start()
+
+    def stop_idle_reader(self) -> None:
+        """Stop the idle reader, so a tool call can have the pty to itself."""
+        if self._idle_reader is None:
+            return
+        self._idle_reader_stop.set()
+        self._idle_reader.join()
+        self._idle_reader = None
+        self._idle_reader_stop = threading.Event()
+
+    # --- what the shell is doing ---
+
+    def incremental_output(self) -> str:
+        """Rendered output that has appeared since the last time this was asked.
+
+        The renderer, not this call, holds the "what have we already shown"
+        state — so polling a long-running command costs only the new bytes.
+        """
+        return self._renderer.incremental(self.before or "")
+
+    def cursor_prompt(self) -> str | None:
+        """Raw signal: the partial line the cursor is parked in, if any."""
+        return self._renderer.cursor_prompt()
+
+    def set_awaiting_input(self, prompt: str | None) -> None:
+        """Record that the shell is blocked on `prompt` (or no longer is)."""
+        self._awaiting_input = prompt
+
+    def pending_prompt(self) -> str | None:
+        """The prompt this shell is blocked on, if it is blocked on one.
+
+        `state == "pending"` alone cannot tell an agent whether a command is
+        slow or is sitting waiting to be answered — both simply stop producing
+        output, and an agent that mistakes the second for the first will poll a
+        command that can never move until it is answered. execute_bash works out
+        which it is; this is where the answer is kept, so the session roster can
+        say so too.
+        """
+        return self._awaiting_input if self.state == "pending" else None
+
+    def set_pending(self) -> None:
+        if not isinstance(self._state, datetime.datetime):
+            self._state = datetime.datetime.now()
+
+    def set_repl(self) -> None:
+        self._state = "repl"
+        self.last_command = ""
+        self._awaiting_input = None
+        # The command is done; the next one starts on a clean screen.
+        self._renderer.reset()
 
     @property
-    def state(self) -> BASH_CLF_OUTPUT:
-        if self._state == "repl":
-            return "repl"
-        return "pending"
+    def state(self) -> ShellState:
+        return "repl" if self._state == "repl" else "pending"
 
     @property
     def cwd(self) -> str:
         return self._cwd
 
     @property
-    def workspace_root(self) -> str:
-        return self._workspace_root
-
-    def set_workspace_root(self, workspace_root: str) -> None:
-        self._workspace_root = workspace_root
-
-    @property
-    def prompt(self) -> re.Pattern[str]:
-        return PROMPT_CONST
-
-    def reset_shell(self) -> None:
-        self.cleanup()
-        self._init_shell()
-
-    @property
-    def current_thread_id(self) -> str:
-        return self._current_thread_id
-
-    def load_state_from_thread_id(self, thread_id: str) -> bool:
-        """Load bash state from a thread_id."""
-        loaded_state = load_bash_state_by_id(thread_id)
-        if not loaded_state:
-            return False
-
-        snapshot = BashState.parse_state(loaded_state)
-        self.load_state(
-            snapshot.bash_command_mode,
-            snapshot.file_edit_mode,
-            snapshot.write_if_empty_mode,
-            snapshot.mode,
-            snapshot.whitelist_for_overwrite,
-            snapshot.workspace_root,
-            snapshot.workspace_root,
-            thread_id,
-        )
-        return True
-
-    def serialize(self) -> dict[str, Any]:
-        """Serialize BashState to a dictionary for saving"""
-        return {
-            "bash_command_mode": self._bash_command_mode.serialize(),
-            "file_edit_mode": self._file_edit_mode.serialize(),
-            "write_if_empty_mode": self._write_if_empty_mode.serialize(),
-            "whitelist_for_overwrite": {
-                k: v.serialize() for k, v in self._whitelist_for_overwrite.items()
-            },
-            "mode": self._mode,
-            "workspace_root": self._workspace_root,
-            "chat_id": self._current_thread_id,
-        }
-
-    def save_state_to_disk(self) -> None:
-        """Save the current bash state to disk using the thread_id."""
-        state_dict = self.serialize()
-        save_bash_state_by_id(self._current_thread_id, state_dict)
-
-    @staticmethod
-    def parse_state(
-        state: dict[str, Any],
-    ) -> BashStateSnapshot:
-        whitelist_state = state["whitelist_for_overwrite"]
-        whitelist_dict: dict[str, Any] = {}
-        if isinstance(whitelist_state, dict):
-            for file_path, data in whitelist_state.items():
-                if isinstance(data, dict) and "file_hash" in data:
-                    whitelist_dict[file_path] = FileWhitelistData.deserialize(data)
-                else:
-                    whitelist_dict[file_path] = FileWhitelistData(
-                        file_hash=data if isinstance(data, str) else "",
-                        line_ranges_read=[(1, 1000000)],
-                        total_lines=1000000,
-                    )
-        else:
-            whitelist_dict = {
-                k: FileWhitelistData(
-                    file_hash="", line_ranges_read=[(1, 1000000)], total_lines=1000000
-                )
-                for k in whitelist_state
-            }
-
-        thread_id = state.get("chat_id")
-        if thread_id is None:
-            thread_id = generate_thread_id()
-
-        return BashStateSnapshot(
-            bash_command_mode=BashCommandMode.deserialize(state["bash_command_mode"]),
-            file_edit_mode=FileEditMode.deserialize(state["file_edit_mode"]),
-            write_if_empty_mode=WriteIfEmptyMode.deserialize(state["write_if_empty_mode"]),
-            mode=state["mode"],
-            whitelist_for_overwrite=whitelist_dict,
-            workspace_root=state.get("workspace_root", ""),
-            thread_id=thread_id,
-        )
-
-    def load_state(
-        self,
-        bash_command_mode: BashCommandMode,
-        file_edit_mode: FileEditMode,
-        write_if_empty_mode: WriteIfEmptyMode,
-        mode: Modes,
-        whitelist_for_overwrite: dict[str, "FileWhitelistData"],
-        cwd: str,
-        workspace_root: str,
-        thread_id: str,
-    ) -> None:
-        """Load state into this BashState instance."""
-        self._bash_command_mode = bash_command_mode
-        self._cwd = cwd or self._cwd
-        self._workspace_root = workspace_root or cwd or self._workspace_root
-        self._file_edit_mode = file_edit_mode
-        self._write_if_empty_mode = write_if_empty_mode
-        self._whitelist_for_overwrite = dict(whitelist_for_overwrite)
-        self._mode = mode
-        self._current_thread_id = thread_id
-        self.reset_shell()
-
-        self.save_state_to_disk()
+    def last_exit_code(self) -> Optional[int]:
+        """Exit code of the last command to reach a prompt, or None if none has."""
+        return self._last_exit_code
 
     def get_pending_for(self) -> str:
-        if isinstance(self._state, datetime.datetime):
-            timedelta = datetime.datetime.now() - self._state
-            return (
-                str(
-                    int(
-                        (
-                            timedelta + datetime.timedelta(seconds=CONFIG.timeout)
-                        ).total_seconds()
-                    )
-                )
-                + " seconds"
-            )
-
-        return "Not pending"
-
-    @property
-    def whitelist_for_overwrite(self) -> dict[str, "FileWhitelistData"]:
-        return self._whitelist_for_overwrite
-
-    def add_to_whitelist_for_overwrite(
-        self, file_paths_with_ranges: dict[str, list[tuple[int, int]]]
-    ) -> None:
-        """Add files to the whitelist for overwrite."""
-        for file_path, ranges in file_paths_with_ranges.items():
-            with open(file_path, "rb") as f:
-                file_content = f.read()
-                file_hash = sha256(file_content).hexdigest()
-                total_lines = file_content.count(b"\n") + 1
-
-            if file_path in self._whitelist_for_overwrite:
-                whitelist_data = self._whitelist_for_overwrite[file_path]
-                whitelist_data.file_hash = file_hash
-                whitelist_data.total_lines = total_lines
-                for range_start, range_end in ranges:
-                    whitelist_data.add_range(range_start, range_end)
-            else:
-                self._whitelist_for_overwrite[file_path] = FileWhitelistData(
-                    file_hash=file_hash,
-                    line_ranges_read=list(ranges),
-                    total_lines=total_lines,
-                )
-
-        self.save_state_to_disk()
-
-    @property
-    def pending_output(self) -> str:
-        return self._pending_output
+        if not isinstance(self._state, datetime.datetime):
+            return "Not pending"
+        elapsed = datetime.datetime.now() - self._state
+        seconds = int(
+            (elapsed + datetime.timedelta(seconds=self.timings.command_budget)).total_seconds()
+        )
+        return f"{seconds} seconds"

@@ -1,11 +1,6 @@
-"""Output processing and shared utilities."""
-
-import os
+"""Output post-processing."""
 
 from .state import ChatWorkspace, CommandRecord
-
-CODING_MAX_TOKENS = int(os.getenv("BABASH_CODING_MAX_TOKENS", "32000"))
-NONCODING_MAX_TOKENS = int(os.getenv("BABASH_NONCODING_MAX_TOKENS", "16000"))
 
 _ERROR_PATTERNS: list[tuple[str, str]] = [
     ("command not found", "Command not installed. Try: apt install <package> or brew install <package>"),
@@ -29,32 +24,26 @@ _ERROR_PATTERNS: list[tuple[str, str]] = [
 
 
 def detect_errors(output: str) -> list[str]:
-    """Detect common error patterns and return actionable hints."""
-    hints: list[str] = []
+    """Common failure modes, and what to do about them."""
     output_lower = output.lower()
-    for pattern, hint in _ERROR_PATTERNS:
-        if pattern.lower() in output_lower:
-            hints.append(f"⚠ {hint}")
-    return hints
-
-
-def get_incremental(full_output: str, last_output: str) -> str:
-    """Return only the new portion of output since last check."""
-    if not last_output:
-        return full_output
-    if full_output.startswith(last_output):
-        new = full_output[len(last_output):]
-        return f"(incremental output)\n{new}" if new.strip() else "(no new output)"
-    return full_output
+    return [
+        f"⚠ {hint}"
+        for pattern, hint in _ERROR_PATTERNS
+        if pattern.lower() in output_lower
+    ]
 
 
 def record_command(chat: ChatWorkspace, command: str, output: str, session: str) -> None:
-    """Record command to a chat's history with error detection."""
+    """Add a command to a chat's history, noting whether it looks like it failed."""
     errors = detect_errors(output)
-    record = CommandRecord(
-        command=command, output=output[:500], session=session,
-        success=not bool(errors), errors=errors,
+    chat.history.append(
+        CommandRecord(
+            command=command,
+            output=output[:500],
+            session=session,
+            success=not bool(errors),
+            errors=errors,
+        )
     )
-    chat.history.append(record)
     if len(chat.history) > 50:
         del chat.history[:-50]

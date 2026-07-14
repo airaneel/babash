@@ -1,385 +1,70 @@
-import os
-import re
-from typing import Annotated, Any, Literal, Optional, Protocol, Sequence, Union
+"""The things you can say to a shell.
 
-from pydantic import BaseModel as PydanticBaseModel
-from pydantic import (
-    ConfigDict,
-    Discriminator,
-    Field,
-    PrivateAttr,
-    Tag,
-    field_validator,
-    model_serializer,
-    model_validator,
-)
+These are plain dataclasses, not pydantic models. They used to be models with
+discriminated unions, `extra="ignore"`, and a pile of validators whose job was
+to repair malformed JSON an LLM had typed by hand — because upstream, the model
+really did hand-author the whole payload. It doesn't anymore: FastMCP validates
+at the tool boundary from each tool's own signature, and the tool then builds
+one of these itself, in typed code. Nothing untrusted reaches them, so there is
+nothing left to validate.
+"""
 
-
-def normalize_thread_id(thread_id: str) -> str:
-    """Normalize thread_id by keeping only word characters (alphanumeric and underscore)."""
-    return re.sub(r"[^\w]", "", thread_id)
-
-
-def _patch_singleton_all(value: Any) -> Any:
-    """Patch ["all"] to "all" — handles a frequent LLM output quirk.
-
-    Runs as a `mode="before"` validator, so the input is still raw and untyped.
-    """
-    if isinstance(value, list) and len(value) == 1 and value[0] == "all":
-        return "all"
-    return value
-
-
-class NoExtraArgs(PydanticBaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-BaseModel = NoExtraArgs
-
-
-Modes = Literal["babash", "architect", "code_writer"]
-
-
-class CodeWriterMode(BaseModel):
-    allowed_globs: Literal["all"] | list[str]
-    allowed_commands: Literal["all"] | list[str]
-
-    # Normalize on the way in instead of mutating the model in model_post_init.
-    _patch = field_validator("allowed_globs", "allowed_commands", mode="before")(
-        _patch_singleton_all
-    )
-
-    def update_relative_globs(self, workspace_root: str) -> None:
-        """Update globs if they're relative paths"""
-        if self.allowed_globs != "all":
-            self.allowed_globs = [
-                glob if os.path.isabs(glob) else os.path.join(workspace_root, glob)
-                for glob in self.allowed_globs
-            ]
-
-
-ModesConfig = Union[Literal["babash", "architect"], CodeWriterMode]
-
-
-class Initialize(BaseModel):
-    type: Literal[
-        "first_call",
-        "user_asked_mode_change",
-        "reset_shell",
-        "user_asked_change_workspace",
-    ]
-    any_workspace_path: str = Field(
-        default="",
-        description="Project directory to initialize in. Optional.",
-    )
-    initial_files_to_read: list[str] = Field(
-        default_factory=list,
-        description="Files to read on init. Optional.",
-    )
-    task_id_to_resume: str = Field(
-        default="",
-        description="Task ID to resume from a previous session. Leave empty for new tasks.",
-    )
-    mode_name: Literal["babash", "architect", "code_writer"] = Field(
-        default="babash",
-        description="Execution mode.",
-    )
-    thread_id: str = Field(
-        default="",
-        description="Thread ID from a previous Initialize call. Leave empty on first_call.",
-    )
-    allowed_globs: Optional[Literal["all"] | list[str]] = Field(
-        default=None,
-        description="File globs that are allowed to be edited. Set to 'all' to allow all files, or provide a list of glob patterns. Only required when mode_name is 'code_writer'.",
-    )
-    allowed_commands: Optional[Literal["all"] | list[str]] = Field(
-        default=None,
-        description="Shell commands that are allowed to be executed. Set to 'all' to allow all commands, or provide a list of command patterns. Only required when mode_name is 'code_writer'.",
-    )
-
-    # Normalize on the way in rather than mutating the model afterwards.
-    _norm_thread_id = field_validator("thread_id", mode="before")(
-        lambda v: normalize_thread_id(v) if isinstance(v, str) else v
-    )
-    _patch_all = field_validator("allowed_globs", "allowed_commands", mode="before")(
-        _patch_singleton_all
-    )
-
-    @model_validator(mode="after")
-    def _check_invariants(self) -> "Initialize":
-        # Raise, don't assert: `python -O` strips asserts, which would silently
-        # remove this validation entirely.
-        if self.mode_name == "code_writer":
-            if self.allowed_globs is None:
-                raise ValueError(
-                    "allowed_globs is required when mode_name is 'code_writer'"
-                )
-            if self.allowed_commands is None:
-                raise ValueError(
-                    "allowed_commands is required when mode_name is 'code_writer'"
-                )
-        if self.type != "first_call" and not self.thread_id:
-            raise ValueError(
-                "Thread id should be provided if type != 'first_call', including when resetting"
-            )
-        return self
-
-    @property
-    def mode(self) -> ModesConfig:
-        if self.mode_name != "code_writer":
-            return self.mode_name
-        # Guaranteed non-None by _check_invariants; re-checked (not asserted) so
-        # the contract survives -O and mypy sees the narrowing.
-        if self.allowed_globs is None or self.allowed_commands is None:
-            raise ValueError("code_writer mode requires allowed_globs and allowed_commands")
-        return CodeWriterMode(
-            allowed_globs=self.allowed_globs, allowed_commands=self.allowed_commands
-        )
-
-    def update_relative_globs(self, workspace_root: str) -> None:
-        """Update globs if they're relative paths"""
-        if self.allowed_globs is not None and self.allowed_globs != "all":
-            self.allowed_globs = [
-                glob if os.path.isabs(glob) else os.path.join(workspace_root, glob)
-                for glob in self.allowed_globs
-            ]
-
-
-class CommandBase(PydanticBaseModel):
-    """Base for bash action types. Allows extra fields so LLM mistakes
-    (e.g. sending 'command' with type='status_check') are silently ignored
-    rather than causing validation errors."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    wait_for_seconds: Optional[float] = None
-    thread_id: str = ""
-
-    @field_validator("thread_id", mode="before")
-    @classmethod
-    def _normalize_thread_id(cls, v: Any) -> Any:
-        # Normalize on the way in rather than mutating the model afterwards.
-        return normalize_thread_id(v) if isinstance(v, str) and v else v
-
-
-class Command(CommandBase):
-    command: str
-    type: Literal["command"] = "command"
-    is_background: bool = False
-
-
-class StatusCheck(CommandBase):
-    status_check: Literal[True] = True
-    type: Literal["status_check"] = "status_check"
-    bg_command_id: str | None = None
-
-
-class SendText(CommandBase):
-    send_text: str
-    type: Literal["send_text"] = "send_text"
-    bg_command_id: str | None = None
-
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol
 
 Specials = Literal[
-    "Enter", "Key-up", "Key-down", "Key-left", "Key-right", "Ctrl-c", "Ctrl-d"
+    # Confirm / edit
+    "Enter",
+    "Tab",
+    "Backspace",
+    "Escape",
+    # Move around a TUI or a pager
+    "Key-up",
+    "Key-down",
+    "Key-left",
+    "Key-right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    # Control the running program
+    "Ctrl-c",  # interrupt
+    "Ctrl-d",  # end of input — closes a REPL, ends `cat > file`
+    "Ctrl-z",  # suspend
+    "Ctrl-l",  # redraw a garbled screen
 ]
 
 
-class SendSpecials(CommandBase):
-    send_specials: Sequence[Specials]
-    type: Literal["send_specials"] = "send_specials"
-    bg_command_id: str | None = None
+@dataclass(frozen=True)
+class Command:
+    """Run a command in the shell."""
+
+    command: str
 
 
-class SendAscii(CommandBase):
-    send_ascii: Sequence[int]
-    type: Literal["send_ascii"] = "send_ascii"
-    bg_command_id: str | None = None
+@dataclass(frozen=True)
+class StatusCheck:
+    """Ask a running command what it's done since we last looked."""
 
 
-def _bash_action_discriminator(data: Any) -> str:
-    if isinstance(data, dict):
-        return str(data.get("type", "command"))
-    return str(getattr(data, "type", "command"))
+@dataclass(frozen=True)
+class SendText:
+    """Type text into whatever is running (a password, a prompt answer)."""
+
+    send_text: str
 
 
-BashAction = Annotated[
-    Annotated[Command, Tag("command")]
-    | Annotated[StatusCheck, Tag("status_check")]
-    | Annotated[SendText, Tag("send_text")]
-    | Annotated[SendSpecials, Tag("send_specials")]
-    | Annotated[SendAscii, Tag("send_ascii")],
-    Discriminator(_bash_action_discriminator),
-]
+@dataclass(frozen=True)
+class SendSpecials:
+    """Press keys that aren't text — Ctrl-c, arrows, Enter."""
+
+    send_specials: tuple[Specials, ...]
 
 
-def _fix_llm_bash_mistakes(data: dict[str, Any]) -> dict[str, Any]:
-    """Fix common LLM mistakes in BashCommand arguments."""
-    import json as _json
-
-    action_type = data.get("type", "command")
-
-    # Fix stringified arrays: "[3]" -> [3], "[\"Ctrl-c\"]" -> ["Ctrl-c"]
-    # Also wrap bare values: "Ctrl-c" -> ["Ctrl-c"], "3" -> [3]
-    for field in ("send_specials", "send_ascii"):
-        val = data.get(field)
-        if not isinstance(val, str):
-            continue
-        try:
-            parsed = _json.loads(val)
-            if isinstance(parsed, list):
-                data = {**data, field: parsed}
-            elif isinstance(parsed, (int, float)):
-                data = {**data, field: [int(parsed)]}
-            else:
-                data = {**data, field: [str(parsed)]}
-        except _json.JSONDecodeError:
-            data = {**data, field: [val]}
-
-    # Fix 'command' field used for non-command types
-    cmd = data.get("command")
-    if cmd and action_type != "command":
-        field_map = {
-            "send_text": "send_text",
-            "send_specials": "send_specials",
-            "send_ascii": "send_ascii",
-        }
-        target = field_map.get(action_type)
-        if target and target not in data:
-            data = {**data, target: cmd}
-
-    return data
-
-
-class BashCommand(BaseModel):
-    action_json: BashAction
-
-    @model_validator(mode="before")
-    @classmethod
-    def combine(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "action_json" in data:
-            return data
-        if isinstance(data, dict):
-            data = _fix_llm_bash_mistakes(data)
-        return {"action_json": data}
-
-    @model_serializer(mode="plain")
-    def serialize_model(self) -> dict[str, Any]:
-        return self.action_json.model_dump()
-
-
-class ReadImage(BaseModel):
-    file_path: str
-
-
-class WriteIfEmpty(BaseModel):
-    file_path: str
-    file_content: str
-
-
-class ReadFiles(BaseModel):
-    file_paths: list[str]
-    _start_line_nums: list[int | None] = PrivateAttr(default_factory=lambda: [])
-    _end_line_nums: list[int | None] = PrivateAttr(default_factory=lambda: [])
-
-    @property
-    def show_line_numbers_reason(self) -> str:
-        return "True"
-
-    @property
-    def start_line_nums(self) -> list[int | None]:
-        """Get the start line numbers."""
-        return self._start_line_nums
-
-    @property
-    def end_line_nums(self) -> list[int | None]:
-        """Get the end line numbers."""
-        return self._end_line_nums
-
-    @staticmethod
-    def _parse_line_range(file_path: str) -> tuple[str, int | None, int | None]:
-        """Parse 'file.py:10-20' into (path, start, end). Returns original path on no match."""
-        if ":" not in file_path:
-            return file_path, None, None
-
-        parts = file_path.rsplit(":", 1)
-        if len(parts) != 2:
-            return file_path, None, None
-
-        path, spec = parts
-
-        # file.py:10
-        if spec.isdigit():
-            return path, int(spec), None
-
-        if "-" not in spec:
-            return file_path, None, None
-
-        left, right = spec.split("-", 1)
-
-        # file.py:-20
-        if not left and right.isdigit():
-            return path, None, int(right)
-
-        # file.py:10- or file.py:10-20
-        if left.isdigit():
-            end = int(right) if right.isdigit() else None
-            return path, int(left), end
-
-        return file_path, None, None
-
-    def model_post_init(self, __context: Any) -> None:
-        self._start_line_nums = []
-        self._end_line_nums = []
-        clean_file_paths = []
-
-        for file_path in self.file_paths:
-            path, start, end = self._parse_line_range(file_path)
-            clean_file_paths.append(path)
-            self._start_line_nums.append(start)
-            self._end_line_nums.append(end)
-
-        self.file_paths = clean_file_paths
-        return super().model_post_init(__context)
-
-
-class FileEdit(BaseModel):
-    file_path: str
-    file_edit_using_search_replace_blocks: str
-
-
-class FileWriteOrEdit(BaseModel):
-    # Naming should be in sorted order otherwise it gets changed in LLM backend.
-    file_path: str = Field(description="#1: absolute file path")
-    percentage_to_change: int = Field(
-        description="#2: predict this percentage, calculated as number of existing lines that will have some diff divided by total existing lines."
-    )
-    text_or_search_replace_blocks: str = Field(
-        description="#3: content/edit blocks. Must be after #2 in the tool xml"
-    )
-    thread_id: str = Field(default="", description="Auto-injected by server.")
-
-    def model_post_init(self, __context: Any) -> None:
-        if self.thread_id:
-            self.thread_id = normalize_thread_id(self.thread_id)
-        return super().model_post_init(__context)
-
-
-class ContextSave(BaseModel):
-    id: str
-    project_root_path: str = Field(
-        default="",
-        description="Project root directory. Leave empty if unknown.",
-    )
-    description: str
-    relevant_file_globs: list[str]
+BashAction = Command | StatusCheck | SendText | SendSpecials
 
 
 class Console(Protocol):
     def print(self, *objects: Any, **kwargs: Any) -> None: ...
 
     def log(self, *objects: Any, **kwargs: Any) -> None: ...
-
-
-class Mdata(PydanticBaseModel):
-    data: BashCommand | FileWriteOrEdit | str | ReadFiles | Initialize | ContextSave

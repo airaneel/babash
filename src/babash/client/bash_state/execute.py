@@ -1,388 +1,324 @@
+"""Sending one action to a shell and reading back what it says."""
+
 from __future__ import annotations
 
 import tempfile
 import threading
-import traceback
 from typing import TYPE_CHECKING, Optional
 
 import pexpect
 
 from ...types_ import (
-    BashCommand,
+    BashAction,
     Command,
-    SendAscii,
     SendSpecials,
     SendText,
+    Specials,
     StatusCheck,
 )
-from ..encoder import EncoderDecoder
-from .shell_process import (
-    CONFIG,
-    cleanup_orphaned_babash_screens,
-    render_terminal_output,
-)
+from .shell_process import cleanup_orphaned_babash_screens
 
 if TYPE_CHECKING:
     from .bash_state import BashState
 
 
-WAITING_INPUT_MESSAGE = """A command is already running. You can't run multiple commands in the main shell.
+BUSY_MESSAGE = """A command is already running in this session. One session runs one command at a time.
 1. Use `check_status` to get its output.
 2. Use `send_input` to give text input to the running program.
 3. Use `send_keys` with Ctrl-c to kill it.
-4. Or run the new command in background with is_background=true.
+4. Or run the new command elsewhere: is_background=true, or create_session.
 """
 
+# Every special key babash accepts, and the bytes it sends.
+#
+# Ctrl-c is absent because it is not bytes: it goes through pexpect's
+# `sendintr()`, which looks up the terminal's own interrupt character and
+# delivers a signal to the foreground process group.
+#
+# Ctrl-d is NOT an interrupt, whatever its neighbour in this list suggests. It
+# is end-of-input: the byte that closes a program's stdin, exits a REPL, or
+# finishes a `cat > file`. Upstream lumped it in with Ctrl-c and sent SIGINT for
+# it, so asking a Python REPL to quit merely gave it a KeyboardInterrupt and
+# left the agent stuck inside.
+#
+# Keying this on `Specials` means the type checker — not a runtime raise in an
+# else-branch — is what guarantees every key has a mapping.
+_SPECIAL_KEYS: dict[Specials, str] = {
+    "Enter": "\x0d",
+    "Tab": "\t",
+    "Backspace": "\x7f",
+    "Escape": "\x1b",
+    "Key-up": "\033[A",
+    "Key-down": "\033[B",
+    "Key-left": "\033[D",
+    "Key-right": "\033[C",
+    "Home": "\033[H",
+    "End": "\033[F",
+    "PageUp": "\033[5~",
+    "PageDown": "\033[6~",
+    "Ctrl-d": "\x04",
+    "Ctrl-z": "\x1a",
+    "Ctrl-l": "\x0c",
+}
+_INTERRUPT_KEYS: frozenset[Specials] = frozenset({"Ctrl-c"})
 
-def get_incremental_output(old_output: list[str], new_output: list[str]) -> list[str]:
-    nold = len(old_output)
-    nnew = len(new_output)
-    if not old_output:
-        return new_output
-    for i in range(nnew - 1, -1, -1):
-        if new_output[i] != old_output[-1]:
-            continue
-        for j in range(i - 1, -1, -1):
-            if (nold - 1 + j - i) < 0:
-                break
-            if new_output[j] != old_output[-1 + j - i]:
-                break
+# execute_bash's reply is "<output>" + this + "<status>".
+STATUS_SEPARATOR = "\n\n---\n\n"
+
+
+def get_status(shell: "BashState") -> str:
+    status = STATUS_SEPARATOR
+    if shell.state == "pending":
+        prompt = shell.pending_prompt()
+        if prompt:
+            # Say this plainly, or the agent reads "still running" and settles in
+            # to poll a command that will never move until it is answered.
+            status += "status = waiting for input\n"
+            status += f"prompt = {prompt!r}\n"
+            status += "Answer it with send_input(text=...), or send_keys for control keys.\n"
         else:
-            return new_output[i + 1 :]
-    return new_output
-
-
-def rstrip(lines: list[str]) -> str:
-    return "\n".join([line.rstrip() for line in lines])
-
-
-def _incremental_text(text: str, last_pending_output: str) -> str:
-    text = text[-100_000:]
-
-    if not last_pending_output:
-        return rstrip(render_terminal_output(text)).lstrip()
-    last_rendered_lines = render_terminal_output(last_pending_output)
-    last_pending_output_rendered = "\n".join(last_rendered_lines)
-    if not last_rendered_lines:
-        return rstrip(render_terminal_output(text))
-
-    text = text[len(last_pending_output) :]
-    old_rendered_applied = render_terminal_output(last_pending_output_rendered + text)
-    rendered = get_incremental_output(last_rendered_lines[:-1], old_rendered_applied)
-
-    if not rendered:
-        return ""
-
-    if rendered[0] == last_rendered_lines[-1]:
-        rendered = rendered[1:]
-    return rstrip(rendered)
-
-
-def get_status(bash_state: "BashState", is_bg: bool) -> str:
-    status = "\n\n---\n\n"
-    if is_bg:
-        status += f"bg_command_id = {bash_state.current_thread_id}\n"
-    if bash_state.state == "pending":
-        status += "status = still running\n"
-        status += "running for = " + bash_state.get_pending_for() + "\n"
-        status += "cwd = " + bash_state.cwd + "\n"
+            status += "status = still running\n"
+        status += "running for = " + shell.get_pending_for() + "\n"
     else:
-        bg_desc = ""
-        status += "status = process exited" + bg_desc + "\n"
-        status += "cwd = " + bash_state.cwd + "\n"
-
-    if not is_bg:
-        status += "This is the main shell. " + get_bg_running_commandsinfo(bash_state)
-
+        status += "status = process exited\n"
+        if shell.last_exit_code is not None:
+            status += f"exit code = {shell.last_exit_code}\n"
+    status += "cwd = " + shell.cwd + "\n"
     return status.rstrip()
 
 
-def is_status_check(arg: BashCommand) -> bool:
-    return (
-        isinstance(arg.action_json, StatusCheck)
-        or (
-            isinstance(arg.action_json, SendSpecials)
-            and arg.action_json.send_specials == ["Enter"]
-        )
-        or (
-            isinstance(arg.action_json, SendAscii)
-            and arg.action_json.send_ascii == [10]
-        )
+def is_status_check(action: BashAction) -> bool:
+    """Whether this call is only asking "what's happened since I last looked?"
+
+    A bare Enter counts: it advances nothing, so the caller is really just
+    waiting on output, and gets the longer budget.
+    """
+    return isinstance(action, StatusCheck) or (
+        isinstance(action, SendSpecials) and action.send_specials == ("Enter",)
     )
+
+
+def _send_action(shell: "BashState", action: BashAction) -> str | None:
+    """Write the action to the shell.
+
+    Returns a message to hand straight back to the caller if there was nothing
+    to send, or None once the input is on its way.
+    """
+    if isinstance(action, Command):
+        if shell.state == "pending":
+            return BUSY_MESSAGE
+
+        shell.console.print(f"$ {action.command}")
+        command = action.command.strip()
+        shell.clear_to_run()
+        # Chunked: a pty's input buffer is finite, and a long line written in
+        # one go can be silently truncated.
+        for i in range(0, len(command), 64):
+            shell.send(command[i : i + 64], set_as_command=None)
+        shell.send(shell.linesep, set_as_command=command)
+        return None
+
+    if isinstance(action, StatusCheck):
+        shell.console.print("Checking status")
+        if shell.state != "pending":
+            return "No running command to check status of."
+        return None
+
+    if isinstance(action, SendText):
+        if not action.send_text:
+            return "Failure: send_text cannot be empty. Use send_keys('Enter') instead."
+        shell.console.print(f"Interact text: {action.send_text!r}")
+        for i in range(0, len(action.send_text), 128):
+            shell.send(action.send_text[i : i + 128], set_as_command=None)
+        shell.send(shell.linesep, set_as_command=None)
+        return None
+
+    if not action.send_specials:
+        return "Failure: send_keys cannot be empty"
+    shell.console.print(f"Sending special sequence: {action.send_specials}")
+    for key in action.send_specials:
+        if key in _INTERRUPT_KEYS:
+            shell.sendintr()
+        else:
+            shell.send(_SPECIAL_KEYS[key], set_as_command=None)
+    return None
+
+
+def _is_interrupt(action: BashAction) -> bool:
+    """Whether this was an attempt to kill what's running — which is the only
+    thing the "couldn't interrupt it" advice makes sense for."""
+    return isinstance(action, SendSpecials) and any(
+        key in _INTERRUPT_KEYS for key in action.send_specials
+    )
+
+
+def _wait_for_output(
+    shell: "BashState", is_check: bool, timeout_s: Optional[float]
+) -> tuple[str, bool]:
+    """Read until the shell prompts again or the budget runs out.
+
+    Returns the new output and whether the command finished.
+
+    `timeout_s` is the caller's budget; without one, the shell's default applies.
+    A plain run_command takes that default: quick commands (most of them) come
+    back immediately, and anything slower returns "pending" so the agent can
+    decide what to do rather than sit blocked. A caller that already knows it
+    isn't going to wait — a background command — passes a small budget instead,
+    just big enough to catch a command that dies on the spot.
+
+    Only a check is worth spending the budget in slices: it is the call that is
+    explicitly waiting, so it keeps going until several slices in a row have
+    produced nothing, on the grounds that a command which has gone quiet is
+    unlikely to speak up again.
+    """
+    timings = shell.timings
+    total_budget = float(timeout_s) if timeout_s else timings.command_budget
+    slice_wait = min(total_budget, timings.output_slice)
+
+    if shell.expect([shell.prompt, pexpect.TIMEOUT], timeout=slice_wait) == 0:
+        return shell.incremental_output(), True
+
+    collected = [shell.incremental_output()]
+    remaining = total_budget - slice_wait
+    if not is_check:
+        return _settle(shell, collected)
+
+    patience = timings.quiet_slices_before_giving_up
+    if not collected[0]:
+        patience -= 1
+
+    while remaining > 0 and patience > 0:
+        this_wait = min(remaining, timings.output_slice)
+        finished = shell.expect([shell.prompt, pexpect.TIMEOUT], timeout=this_wait) == 0
+        collected.append(shell.incremental_output())
+        if finished:
+            shell.set_awaiting_input(None)
+            return _join(collected), True
+        patience = timings.quiet_slices_before_giving_up if collected[-1] else patience - 1
+        remaining -= this_wait
+
+    return _settle(shell, collected)
+
+
+def _settle(shell: "BashState", collected: list[str]) -> tuple[str, bool]:
+    """Hand back a still-running command, having first checked whether it is
+    running at all or is standing there waiting to be answered."""
+    extra, finished = _detect_pending_prompt(shell)
+    collected.append(extra)
+    return _join(collected), finished
+
+
+def _join(chunks: list[str]) -> str:
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+# How long to watch a parked cursor before calling it a prompt. Long enough that
+# anything still working — a progress bar, a spinner — gives itself away by
+# writing again; short enough not to be felt.
+PROMPT_SETTLE_SECONDS = 0.5
+
+
+def _detect_pending_prompt(shell: "BashState") -> tuple[str, bool]:
+    """Work out whether the command has stopped to ask something.
+
+    A cursor parked mid-line is the signature of a program blocked in read() —
+    it printed `Select [1/2/3]: ` and is waiting. But it is also the signature of
+    a progress bar mid-redraw, so the cursor alone proves nothing. The tell is
+    what happens next: a working program writes again, a blocked one is silent.
+    So we wait a beat and look.
+
+    Returns any output that arrived during that beat (which must not be dropped)
+    and whether the command finished while we watched. The verdict itself is
+    recorded on the shell, so the session roster can report it too.
+    """
+    if shell.cursor_prompt() is None:
+        shell.set_awaiting_input(None)
+        return "", False
+
+    finished = shell.expect([shell.prompt, pexpect.TIMEOUT], timeout=PROMPT_SETTLE_SECONDS) == 0
+    extra = shell.incremental_output()
+    if finished:
+        shell.set_awaiting_input(None)
+        return extra, True
+
+    # It spoke while we watched, so it isn't waiting on us.
+    shell.set_awaiting_input(None if extra else shell.cursor_prompt())
+    return extra, False
+
+
+def truncate(output: str, max_chars: Optional[int]) -> str:
+    """Keep the tail of an over-long output, spilling the whole thing to a file.
+
+    The tail, not the head: the end of a build log is where the error is.
+
+    This limit used to be measured in LLM tokens, which meant shipping a 9MB
+    tokenizer and fetching a vocabulary from huggingface.co on first use — a
+    network round-trip, at startup, in a shell server, to decide where to cut a
+    string. Characters are a fine proxy for the only thing the limit is for:
+    not flooding the agent's context.
+    """
+    if not max_chars or len(output) <= max_chars:
+        return output
+
+    saved = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    saved.write(output.encode())
+    saved.close()
+    return (
+        f"(...OUTPUT TRUNCATED — {len(output)} chars, showing the last {max_chars}. "
+        f"Full output saved to {saved.name}. TIP: use more precise commands "
+        f"(grep, head, tail, awk) instead of dumping everything.)\n" + output[-max_chars:]
+    )
+
+
+def _reply(shell: "BashState", action: BashAction, output: str, finished: bool) -> str:
+    """Assemble what the agent sees: the output, then the shell's standing."""
+    if _is_interrupt(action) and not finished:
+        output += (
+            "\n---\n----\nFailure interrupting.\n"
+            "You may want to try Ctrl-c again or program specific exit interactive commands.\n"
+        )
+
+    if isinstance(action, Command):
+        # The pty echoes what we typed back at us; the agent sent it, so it
+        # knows. Drop it rather than pay context to repeat it.
+        command = action.command.strip()
+        if output.startswith(command):
+            output = output[len(command) :]
+
+    return output + get_status(shell)
 
 
 def execute_bash(
-    bash_state: "BashState",
-    enc: EncoderDecoder[int],
-    bash_arg: BashCommand,
-    max_tokens: Optional[int],
+    shell: "BashState",
+    action: BashAction,
+    max_chars: Optional[int],
     timeout_s: Optional[float],
-) -> tuple[str, float]:
+) -> str:
+    """Send one action to a shell and read back whatever it has to say."""
     try:
-        # Check if the thread_id matches current
-        if bash_arg.action_json.thread_id != bash_state.current_thread_id:
-            if not bash_state.load_state_from_thread_id(bash_arg.action_json.thread_id):
-                return (
-                    f"Error: No saved bash state found for thread_id `{bash_arg.action_json.thread_id}`. Please initialize first with this ID.",
-                    0.0,
-                )
+        try:
+            early_reply = _send_action(shell, action)
+        except KeyboardInterrupt:
+            shell.sendintr()
+            shell.expect(shell.prompt)
+            return "---\n\nFailure: user interrupted the execution"
+        if early_reply is not None:
+            return early_reply
 
-        output, cost = _execute_bash(bash_state, enc, bash_arg, max_tokens, timeout_s)
-
-        # Remove echo if it's a command
-        if isinstance(bash_arg.action_json, Command):
-            command = bash_arg.action_json.command.strip()
-            if output.startswith(command):
-                output = output[len(command) :]
-
-    finally:
-        bash_state.run_bg_expect_thread()
-        if bash_state.over_screen:
-            thread = threading.Thread(
-                target=cleanup_orphaned_babash_screens,
-                args=(bash_state.console,),
-                daemon=True,
-            )
-            thread.start()
-    return output, cost
-
-
-def get_bg_running_commandsinfo(bash_state: "BashState") -> str:
-    msg = ""
-    running = []
-    for id_, state in bash_state.background_shells.items():
-        running.append(f"Command: {state.last_command}, bg_command_id: {id_}")
-    if running:
-        msg = (
-            "Following background commands are attached:\n" + "\n".join(running) + "\n"
-        )
-    else:
-        msg = "No command running in background.\n"
-    return msg
-
-
-def _execute_bash(
-    bash_state: "BashState",
-    enc: EncoderDecoder[int],
-    bash_arg: BashCommand,
-    max_tokens: Optional[int],
-    timeout_s: Optional[float],
-) -> tuple[str, float]:
-    try:
-        is_interrupt = False
-        command_data = bash_arg.action_json
-        is_bg = False
-        og_bash_state = bash_state
-
-        if not isinstance(command_data, Command) and command_data.bg_command_id:
-            if command_data.bg_command_id not in bash_state.background_shells:
-                error = f"No shell found running with command id {command_data.bg_command_id}.\n"
-                if bash_state.background_shells:
-                    error += get_bg_running_commandsinfo(bash_state)
-                if bash_state.state == "pending":
-                    error += f"On the main thread a command is already running ({bash_state.last_command})"
-                else:
-                    error += "On the main thread no command is running."
-                raise Exception(error)
-            bash_state = bash_state.background_shells[command_data.bg_command_id]
-            is_bg = True
-
-        if isinstance(command_data, Command):
-            if bash_state.bash_command_mode.allowed_commands == "none":
-                return "Error: shell commands not allowed in current mode", 0.0
-
-            bash_state.console.print(f"$ {command_data.command}")
-
-            command = command_data.command.strip()
-
-            if command_data.is_background:
-                bash_state = bash_state.start_new_bg_shell(bash_state.cwd)
-                is_bg = True
-
-            if bash_state.state == "pending":
-                raise ValueError(WAITING_INPUT_MESSAGE)
-
-            bash_state.clear_to_run()
-            for i in range(0, len(command), 64):
-                bash_state.send(command[i : i + 64], set_as_command=None)
-            bash_state.send(bash_state.linesep, set_as_command=command)
-        elif isinstance(command_data, StatusCheck):
-            bash_state.console.print("Checking status")
-            if bash_state.state != "pending":
-                error = "No running command to check status of.\n"
-                error += get_bg_running_commandsinfo(bash_state)
-                return error, 0.0
-
-        elif isinstance(command_data, SendText):
-            if not command_data.send_text:
-                return "Failure: send_text cannot be empty. Use send_specials with Enter instead.", 0.0
-
-            bash_state.console.print(f"Interact text: {command_data.send_text!r}")
-            for i in range(0, len(command_data.send_text), 128):
-                bash_state.send(
-                    command_data.send_text[i : i + 128], set_as_command=None
-                )
-            bash_state.send(bash_state.linesep, set_as_command=None)
-
-        elif isinstance(command_data, SendSpecials):
-            if not command_data.send_specials:
-                return "Failure: send_specials cannot be empty", 0.0
-
-            bash_state.console.print(
-                f"Sending special sequence: {command_data.send_specials}"
-            )
-            for char in command_data.send_specials:
-                if char == "Key-up":
-                    bash_state.send("\033[A", set_as_command=None)
-                elif char == "Key-down":
-                    bash_state.send("\033[B", set_as_command=None)
-                elif char == "Key-left":
-                    bash_state.send("\033[D", set_as_command=None)
-                elif char == "Key-right":
-                    bash_state.send("\033[C", set_as_command=None)
-                elif char == "Enter":
-                    bash_state.send("\x0d", set_as_command=None)
-                elif char == "Ctrl-c":
-                    bash_state.sendintr()
-                    is_interrupt = True
-                elif char == "Ctrl-d":
-                    bash_state.sendintr()
-                    is_interrupt = True
-                elif char == "Ctrl-z":
-                    bash_state.send("\x1a", set_as_command=None)
-                else:
-                    raise Exception(f"Unknown special character: {char}")
-
-        elif isinstance(command_data, SendAscii):
-            if not command_data.send_ascii:
-                return "Failure: send_ascii cannot be empty", 0.0
-
-            bash_state.console.print(
-                f"Sending ASCII sequence: {command_data.send_ascii}"
-            )
-            for ascii_char in command_data.send_ascii:
-                bash_state.send(chr(ascii_char), set_as_command=None)
-                if ascii_char == 3:
-                    is_interrupt = True
+        output, finished = _wait_for_output(shell, is_status_check(action), timeout_s)
+        # Order matters: _wait_for_output reads the renderer's "what's new"
+        # state, and set_repl clears it.
+        if finished:
+            shell.set_repl()
         else:
-            raise ValueError(f"Unknown command type: {type(command_data)}")
+            shell.set_pending()
 
-    except KeyboardInterrupt:
-        bash_state.sendintr()
-        bash_state.expect(bash_state.prompt)
-        return "---\n\nFailure: user interrupted the execution", 0.0
-
-    # run_command: always use the short default timeout. Commands that finish
-    # quickly (most of them) return immediately; anything still running returns
-    # "pending" so the agent can decide what to do next.
-    # check_status: honor wait_for_seconds as the full budget, using
-    # timeout_while_output only as the size of each polling slice with
-    # patience-based early exit on stalled output.
-    is_sc = is_status_check(bash_arg)
-    if is_sc:
-        total_budget = float(timeout_s) if timeout_s else CONFIG.timeout
-    else:
-        total_budget = CONFIG.timeout
-    slice_wait = min(total_budget, CONFIG.timeout_while_output)
-    index = bash_state.expect(
-        [bash_state.prompt, pexpect.TIMEOUT], timeout=slice_wait
-    )
-    if index == 1:
-        text = bash_state.before or ""
-        incremental_text = _incremental_text(text, bash_state.pending_output)
-
-        second_wait_success = False
-        remaining = total_budget - slice_wait
-        if is_sc and remaining > 0:
-            patience = CONFIG.output_wait_patience
-            if not incremental_text:
-                patience -= 1
-            itext = incremental_text
-            while remaining > 0 and patience > 0:
-                this_wait = min(remaining, CONFIG.timeout_while_output)
-                index = bash_state.expect(
-                    [bash_state.prompt, pexpect.TIMEOUT], timeout=this_wait
-                )
-                if index == 0:
-                    second_wait_success = True
-                    break
-                _itext = bash_state.before or ""
-                _itext = _incremental_text(_itext, bash_state.pending_output)
-                if _itext != itext:
-                    patience = CONFIG.output_wait_patience
-                else:
-                    patience -= 1
-                itext = _itext
-                remaining = remaining - this_wait
-
-            if not second_wait_success:
-                text = bash_state.before or ""
-                incremental_text = _incremental_text(text, bash_state.pending_output)
-
-        if not second_wait_success:
-            bash_state.set_pending(text)
-
-            tokens = enc.encoder(incremental_text)
-
-            if max_tokens and len(tokens) >= max_tokens:
-                saved = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-                saved.write(incremental_text.encode())
-                saved.close()
-                incremental_text = (
-                    f"(...OUTPUT TRUNCATED — too large. Full output saved to {saved.name}. "
-                    f"TIP: Use more precise commands (grep, head, tail, awk) to get specific data instead of dumping everything.)\n"
-                    + enc.decoder(tokens[-(max_tokens - 1) :])
-                )
-
-            if is_interrupt:
-                incremental_text = (
-                    incremental_text
-                    + """---
-----
-Failure interrupting.
-You may want to try Ctrl-c again or program specific exit interactive commands.
-    """
-                )
-
-            exit_status = get_status(bash_state, is_bg)
-            incremental_text += exit_status
-            if is_bg and bash_state.state == "repl":
-                try:
-                    bash_state.cleanup()
-                    og_bash_state.background_shells.pop(bash_state.current_thread_id)
-                except Exception as e:
-                    bash_state.console.log(f"error while cleaning up {e}")
-
-            return incremental_text, 0
-
-    before = str(bash_state.before)
-
-    output = _incremental_text(before, bash_state.pending_output)
-    bash_state.set_repl()
-
-    tokens = enc.encoder(output)
-    if max_tokens and len(tokens) >= max_tokens:
-        saved = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-        saved.write(output.encode())
-        saved.close()
-        output = (
-            f"(...truncated, full output saved to {saved.name})\n"
-            + enc.decoder(tokens[-(max_tokens - 1) :])
-        )
-
-    try:
-        exit_status = get_status(bash_state, is_bg)
-        output += exit_status
-        if is_bg and bash_state.state == "repl":
-            try:
-                bash_state.cleanup()
-                og_bash_state.background_shells.pop(bash_state.current_thread_id)
-            except Exception as e:
-                bash_state.console.log(f"error while cleaning up {e}")
-    except ValueError:
-        bash_state.console.print(output)
-        bash_state.console.print(traceback.format_exc())
-        bash_state.console.print("Malformed output, restarting shell", style="red")
-        bash_state.reset_shell()
-        output = "(exit shell has restarted)"
-    return output, 0
+        return _reply(shell, action, truncate(output, max_chars), finished)
+    finally:
+        shell.start_idle_reader()
+        if shell.over_screen:
+            threading.Thread(
+                target=cleanup_orphaned_babash_screens,
+                args=(shell.console,),
+                daemon=True,
+            ).start()
