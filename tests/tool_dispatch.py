@@ -1,10 +1,16 @@
-"""Tool dispatch — used by tests. Server uses native @mcp.tool() handlers instead."""
+"""Model-based tool dispatch — TEST SCAFFOLDING ONLY.
+
+The MCP server uses native @mcp.tool() handlers with typed parameters and never
+calls this. It used to ship inside the package, where it was 163 lines of code
+no production path executed. It lives here now so the tests can keep driving the
+underlying ops (execute_bash, file_writing, read_files, …) through one entry
+point, without the package carrying a second, unused API surface."""
 
 from typing import Any, Callable, Optional, Type
 
 from pydantic import TypeAdapter, ValidationError
 
-from ...types_ import (
+from babash.types_ import (
     BashCommand,
     ContextSave,
     FileEdit,
@@ -14,12 +20,12 @@ from ...types_ import (
     ReadImage,
     WriteIfEmpty,
 )
-from ..bash_state import execute_bash
-from ..encoder import EncoderDecoder
-from .context import Context, ImageData
-from .init_ops import _handle_context_save, is_mode_change
-from .read_ops import read_files
-from .write_ops import do_diff_edit, file_writing, write_file
+from babash.client.bash_state import execute_bash
+from babash.client.encoder import EncoderDecoder
+from babash.client.tools.context import Context, ImageData
+from babash.client.tools.init_ops import _handle_context_save, is_mode_change
+from babash.client.tools.read_ops import read_files
+from babash.client.tools.write_ops import do_diff_edit, file_writing, write_file
 
 import json
 import os
@@ -108,7 +114,7 @@ def get_tool_output(
         _merge_ranges(file_paths_with_ranges, paths)
 
     elif isinstance(arg, ReadImage):
-        from .context import read_image_from_shell
+        from babash.client.tools.context import read_image_from_shell
         image_data = read_image_from_shell(arg.file_path, context)
         output = image_data, 0.0
 
@@ -128,7 +134,7 @@ def get_tool_output(
                 else os.path.dirname(arg.any_workspace_path)
             )
             workspace_path = workspace_path if os.path.exists(workspace_path) else ""
-            from .init_ops import reset_babash
+            from babash.client.tools.init_ops import reset_babash
             result = reset_babash(
                 context, workspace_path,
                 arg.mode_name if is_mode_change(arg.mode, context.bash_state) else None,
@@ -136,7 +142,7 @@ def get_tool_output(
             )
             output = result, 0.0
         else:
-            from .init_ops import initialize
+            from babash.client.tools.init_ops import initialize
             from typing import Literal
             init_type: Literal["user_asked_change_workspace", "first_call"] = arg.type  # type: ignore[assignment]
             output_, context, init_paths = initialize(

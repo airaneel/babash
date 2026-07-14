@@ -6,10 +6,10 @@ import pytest
 from babash.client.bash_state.bash_state import BashState
 from babash.client.file_ops.diff_edit import SearchReplaceMatchError, fix_indentation
 from babash.client.file_ops.search_replace import SearchReplaceSyntaxError
+from tool_dispatch import get_tool_output  # test-only dispatcher
 from babash.client.tools import (
     Context,
     default_enc,
-    get_tool_output,
 )
 from babash.types_ import FileWriteOrEdit, Initialize
 

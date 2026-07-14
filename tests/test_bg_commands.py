@@ -8,10 +8,10 @@ from typing import Generator
 import pytest
 
 from babash.client.bash_state.bash_state import BashState
+from tool_dispatch import get_tool_output  # test-only dispatcher
 from babash.client.tools import (
     Context,
     default_enc,
-    get_tool_output,
 )
 from babash.types_ import (
     BashCommand,
