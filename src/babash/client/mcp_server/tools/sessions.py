@@ -3,7 +3,7 @@
 import pexpect
 from mcp.types import ToolAnnotations
 
-from ..chat import resolve_chat, roster_footer, warmup_shell
+from ..chat import full_roster, resolve_chat, warmup_shell
 from ..instance import get_app, mcp
 
 
@@ -32,7 +32,7 @@ async def create_session(
     cwd = working_directory or chat.main.cwd
     chat.sessions[name] = app.new_shell(cwd)
     await warmup_shell(chat.sessions[name])
-    return f"Session '{name}' created (cwd: {cwd}).\n\n{roster_footer(chat)}"
+    return f"Session '{name}' created (cwd: {cwd}).\n\n{full_roster(chat)}"
 
 
 @mcp.tool(
@@ -49,7 +49,7 @@ async def list_sessions(chat_id: str) -> str:
     chat, err = resolve_chat(app, chat_id)
     if chat is None:
         return err
-    return roster_footer(chat)
+    return full_roster(chat)
 
 
 @mcp.tool(
@@ -77,5 +77,5 @@ async def destroy_session(name: str, chat_id: str) -> str:
         shell.sendintr()
         shell.cleanup()
     except (pexpect.ExceptionPexpect, OSError) as e:
-        return f"Session '{name}' destroyed, but its shell did not close cleanly: {e}\n\n{roster_footer(chat)}"
-    return f"Session '{name}' destroyed.\n\n{roster_footer(chat)}"
+        return f"Session '{name}' destroyed, but its shell did not close cleanly: {e}\n\n{full_roster(chat)}"
+    return f"Session '{name}' destroyed.\n\n{full_roster(chat)}"

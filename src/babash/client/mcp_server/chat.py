@@ -34,28 +34,53 @@ def resolve_chat(app: AppState, chat_id: str) -> tuple[ChatWorkspace | None, str
     )
 
 
-def roster_footer(chat: ChatWorkspace) -> str:
-    """Full session roster for this chat, appended to shell-tool responses so the
-    agent always sees which shells it has open and which are busy."""
+def abbreviate(command: str) -> str:
+    """A command shortened to something a footer can carry without being a wall."""
+    line = " ".join(command.split())
+    return line if len(line) <= 60 else line[:57] + "..."
 
-    def fmt(name: str, sh: BashState) -> str:
-        if sh.state != "pending":
-            return f"  {name}: idle (cwd={sh.cwd})"
-        prompt = sh.pending_prompt()
-        if prompt:
-            return (
-                f"  {name}: WAITING FOR INPUT at {prompt!r} — "
-                f"send_input(text=..., session={name!r}) (cwd={sh.cwd})"
-            )
-        return (
-            f"  {name}: running '{sh.last_command or '?'}' "
-            f"for {sh.get_pending_for()} (cwd={sh.cwd})"
-        )
 
-    lines = [f"[chat {chat.chat_id}] sessions:", fmt("main", chat.main)]
-    for name, sh in chat.sessions.items():
-        lines.append(fmt(name, sh))
-    return "\n".join(lines)
+def _activity(shell: BashState, name: str) -> str:
+    if shell.state != "pending":
+        return "idle"
+    prompt = shell.pending_prompt()
+    if prompt:
+        return f"WAITING FOR INPUT at {prompt!r} — send_input(text=..., session={name!r})"
+    return f"running '{abbreviate(shell.last_command or '?')}' for {shell.get_pending_for()}"
+
+
+def full_roster(chat: ChatWorkspace) -> str:
+    """Every session this chat has, idle ones included. What list_sessions is for."""
+    lines = [
+        f"  {name}: {_activity(sh, name)} (cwd={sh.cwd})"
+        for name, sh in [("main", chat.main), *chat.sessions.items()]
+    ]
+    return "\n".join([f"[chat {chat.chat_id}] sessions:", *lines])
+
+
+def roster_footer(chat: ChatWorkspace, exclude: str) -> str:
+    """What the *other* sessions are doing — empty when that is nothing.
+
+    Every shell-tool reply used to end in the full roster, including the session
+    the call was already about and including the idle ones. So an agent waiting on
+    a slow build got the same few hundred tokens back every five seconds: the
+    polled session's whole command in the status line, then that same command a
+    second time in the roster, then a list of shells sitting idle. Nothing in it
+    had changed since the previous poll, and none of it was what was asked.
+
+    A reply already says what the caller's own session is doing. What it cannot
+    say is that some *other* session has finished or has stopped to ask a
+    question — and that is the only thing a footer is for. Idle is not news, and
+    repeating the question back is not an answer.
+
+    full_roster is still there for list_sessions, which exists to be asked.
+    """
+    lines = [
+        f"  {name}: {_activity(sh, name)}"
+        for name, sh in [("main", chat.main), *chat.sessions.items()]
+        if name != exclude and sh.state == "pending"
+    ]
+    return "\n".join(["other sessions:", *lines]) if lines else ""
 
 
 async def warmup_shell(shell: BashState) -> None:
