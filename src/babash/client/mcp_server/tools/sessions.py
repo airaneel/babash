@@ -4,10 +4,10 @@ import pexpect
 from mcp.types import ToolAnnotations
 
 from ..chat import full_roster, resolve_chat, warmup_shell
-from ..instance import get_app, mcp
+from ..instance import get_app, text_tool
 
 
-@mcp.tool(
+@text_tool(
     description="Create a named shell session for parallel work.",
     annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -35,7 +35,7 @@ async def create_session(
     return f"Session '{name}' created (cwd: {cwd}).\n\n{full_roster(chat)}"
 
 
-@mcp.tool(
+@text_tool(
     description="List all shell sessions and their status.",
     annotations=ToolAnnotations(
         readOnlyHint=True,
@@ -52,7 +52,7 @@ async def list_sessions(chat_id: str) -> str:
     return full_roster(chat)
 
 
-@mcp.tool(
+@text_tool(
     description="Destroy a named session.",
     annotations=ToolAnnotations(
         readOnlyHint=False,

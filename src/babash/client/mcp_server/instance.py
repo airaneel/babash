@@ -7,12 +7,14 @@ together, rather than the one everything reaches into.
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib import metadata
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel.server import request_ctx
+from mcp.types import ToolAnnotations
 
 from ...settings import Settings
 from ..bash_state import get_tmpdir
@@ -139,6 +141,35 @@ mcp = FastMCP(
     host=SETTINGS.host,
     port=SETTINGS.port,
 )
+
+
+def text_tool(
+    description: str,
+    annotations: ToolAnnotations,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a tool whose result is prose for the model to read.
+
+    Every babash tool returns human-readable text — command output, a status
+    line, an error with the shell command that fixes it — never a JSON object a
+    client parses against a schema. The MCP spec calls that unstructured content,
+    and it belongs in the reply's `content` as a single TextContent block.
+
+    Left to its default, FastMCP does something else. It sees the `-> str` return
+    annotation, decides the tool is "structured", auto-builds an output schema of
+    `{result: string}`, and returns the reply twice: as the text we wrote *and*
+    as `structuredContent={"result": "<the same text>"}`. Claude Desktop, handed
+    both, renders the structured half — so the user reads `{"result": "..."}`
+    instead of the output. There is nothing structured about a string; the schema
+    is noise. structured_output=False drops it, and the reply is just the text.
+
+    (It also spares read_image, whose return is an Image the schema builder cannot
+    describe at all — with the default it would fail to register outright.)
+    """
+    return mcp.tool(
+        description=description,
+        annotations=annotations,
+        structured_output=False,
+    )
 
 
 def get_app() -> AppState:

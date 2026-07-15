@@ -107,6 +107,36 @@ def test_list_tools() -> None:
         proc.terminate()
 
 
+def test_no_tool_declares_an_output_schema() -> None:
+    """Every babash tool returns prose, not structured data. A tool with a `-> str`
+    return that FastMCP auto-detects as "structured" gets an outputSchema of
+    {result: string} and answers with structuredContent={"result": "..."} — which
+    Claude Desktop renders as that raw JSON wrapper instead of the text. text_tool
+    (structured_output=False) suppresses it; this fails if a tool skips text_tool."""
+    proc, send, recv, _ = _session()
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        tools = recv()["result"]["tools"]
+        offenders = [t["name"] for t in tools if t.get("outputSchema") is not None]
+        assert not offenders, f"tools still declaring an output schema: {offenders}"
+    finally:
+        proc.terminate()
+
+
+def test_a_tool_reply_has_no_structured_content_wrapper() -> None:
+    """The symptom, end to end: the reply must arrive as plain content, with no
+    structuredContent {"result": ...} beside it."""
+    proc, send, recv, _ = _session()
+    try:
+        cid = _init_chat(send, recv, 1)
+        r = _call(send, recv, "run_command", {"command": "echo hi", "chat_id": cid}, 2)
+        result = r["result"]
+        assert result.get("structuredContent") is None
+        assert result["content"][0]["text"].startswith("hi")
+    finally:
+        proc.terminate()
+
+
 def test_run_command() -> None:
     proc, send, recv, _ = _session()
     try:

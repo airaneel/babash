@@ -22,7 +22,7 @@ from ...documents import DocumentError, extract
 from ...fs import FileError, FileStore, LocalStore, SessionStore
 from ...images import ImageError, load
 from ..chat import resolve_chat
-from ..instance import get_app, mcp
+from ..instance import get_app, text_tool
 from ..state import ChatWorkspace
 
 # Reading a whole file at once is usually a mistake on anything large; this is
@@ -55,7 +55,7 @@ def _numbered(content: str, offset: int, limit: int) -> str:
     return body or "(empty file)"
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Read a file. Returns numbered lines. Use offset/limit for large files. "
         "Pass session= to read a file on the far side of that session's shell "
@@ -89,7 +89,7 @@ async def read_file(
     return _numbered(content, offset, limit)[:app.settings.max_output_chars]
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Look at an image — a screenshot, a diagram, a rendered plot. PNG, JPEG, GIF "
         "and WebP are the formats the model can see; for anything else (HEIC, BMP, "
@@ -103,10 +103,6 @@ async def read_file(
         idempotentHint=True,
         openWorldHint=False,
     ),
-    # This tool returns an image, not JSON. FastMCP would otherwise try to build
-    # an output schema out of the return annotation, and pydantic cannot describe
-    # an Image; the result goes back as ImageContent, which needs no schema.
-    structured_output=False,
 )
 async def read_image(
     file_path: str,
@@ -138,7 +134,7 @@ async def read_image(
     return Image(data=image.data, format=image.format)
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Read a PDF, Word, Excel or PowerPoint file as text. Use this instead of "
         "read_file for anything that isn't plain text. Pass session= to read one on "
@@ -178,7 +174,7 @@ async def read_document(
     return f"{header}\n{body}\n</{doc.kind}>"[: app.settings.max_output_chars]
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Write a file, creating it or replacing it whole. Parent directories are "
         "created. Prefer this over `cat <<EOF` in run_command: the content never "
@@ -218,7 +214,7 @@ async def write_file(
     return f"{verb} {file_path} {store.where} ({lines} lines, {len(content.encode())} bytes)."
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Replace an exact string in a file. old_string must appear EXACTLY once "
         "(include surrounding lines to make it unique), unless replace_all=true. "
