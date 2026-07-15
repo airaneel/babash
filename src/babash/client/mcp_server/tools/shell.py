@@ -12,7 +12,7 @@ from ....types_ import Command, SendSpecials, SendText, Specials, StatusCheck
 from ...bash_state import STATUS_SEPARATOR, BashState, execute_bash
 from ..chat import abbreviate, full_roster, new_chat_id, resolve_chat, roster_footer, warmup_shell
 from ..helpers import detect_errors, record_command
-from ..instance import get_app, mcp
+from ..instance import get_app, text_tool
 from ..state import AppState, ChatWorkspace
 
 # A single check_status never blocks a session for longer than this. If the
@@ -96,7 +96,7 @@ async def _target(
     )
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "REQUIRED first call in every conversation. Creates an isolated shell "
         "workspace for this chat and returns a chat_id. You MUST pass that same "
@@ -157,7 +157,7 @@ def _new_since_last(last_output: dict[str, str], sname: str, output: str) -> str
     return new_text
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Execute a shell command. Long commands return immediately with state=pending — "
         "never use `sleep` to wait, call check_status instead. For parallel work use "
@@ -249,7 +249,7 @@ async def run_command(
     return _reply(output, chat, sname)
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Check a running command's status and return new output since the last check. "
         "Use this instead of `sleep` when waiting — pass wait_for_seconds to block up "
@@ -323,7 +323,7 @@ async def check_status(
     return _reply(result, chat, sname)
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Send text input to a running program (passwords, prompts). "
         "For Enter/Ctrl-c use send_keys instead."
@@ -361,7 +361,7 @@ async def send_input(
     return _reply(output, chat, session or "main")
 
 
-@mcp.tool(
+@text_tool(
     description=(
         "Send special keys. Use Ctrl-c to interrupt, arrow keys to navigate. "
         "babash has no built-in command timeout and macOS has no `timeout` binary "
