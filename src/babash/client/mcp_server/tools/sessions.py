@@ -4,7 +4,7 @@ import pexpect
 from mcp.types import ToolAnnotations
 
 from ..chat import full_roster, resolve_chat, warmup_shell
-from ..instance import get_app, text_tool
+from ..instance import ChatId, get_app, text_tool
 
 
 @text_tool(
@@ -18,7 +18,7 @@ from ..instance import get_app, text_tool
 )
 async def create_session(
     name: str,
-    chat_id: str,
+    chat_id: ChatId,
     working_directory: str = "",
 ) -> str:
     app = get_app()
@@ -39,12 +39,10 @@ async def create_session(
     description="List all shell sessions and their status.",
     annotations=ToolAnnotations(
         readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
         openWorldHint=False,
     ),
 )
-async def list_sessions(chat_id: str) -> str:
+async def list_sessions(chat_id: ChatId) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
     if chat is None:
@@ -57,11 +55,11 @@ async def list_sessions(chat_id: str) -> str:
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
-        idempotentHint=False,
+        idempotentHint=True,
         openWorldHint=False,
     ),
 )
-async def destroy_session(name: str, chat_id: str) -> str:
+async def destroy_session(name: str, chat_id: ChatId) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
     if chat is None:

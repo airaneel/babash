@@ -3,16 +3,18 @@
 import hashlib
 import shlex
 from dataclasses import dataclass
+from typing import Annotated
 
 import anyio
 from mcp.server.fastmcp import Context as McpContext
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from ....types_ import Command, SendSpecials, SendText, Specials, StatusCheck
 from ...bash_state import STATUS_SEPARATOR, BashState, execute_bash
 from ..chat import abbreviate, full_roster, new_chat_id, resolve_chat, roster_footer, warmup_shell
 from ..helpers import detect_errors, record_command
-from ..instance import get_app, text_tool
+from ..instance import ChatId, Session, get_app, text_tool
 from ..state import AppState, ChatWorkspace
 
 # A single check_status never blocks a session for longer than this. If the
@@ -107,14 +109,28 @@ async def _target(
     ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
-        destructiveHint=False,
+        # Re-initializing an existing chat_id kills that chat's shells, taking
+        # any command still running with them.
+        destructiveHint=True,
         idempotentHint=False,
         openWorldHint=False,
     ),
 )
 async def babash_initialize(
-    chat_id: str = "",
-    working_directory: str = "",
+    chat_id: Annotated[
+        str,
+        Field(
+            description=(
+                "Leave empty to be assigned a fresh chat_id. Passing one you "
+                "already have RESETS that workspace: its shells are killed, "
+                "taking any running command with them."
+            ),
+        ),
+    ] = "",
+    working_directory: Annotated[
+        str,
+        Field(description="Directory the chat's 'main' shell starts in. Defaults to the server's workspace."),
+    ] = "",
 ) -> str:
     app = get_app()
     cid = chat_id or new_chat_id()
@@ -177,9 +193,9 @@ def _new_since_last(last_output: dict[str, str], sname: str, output: str) -> str
 async def run_command(
     ctx: McpContext,  # type: ignore[type-arg]  # for progress/log, not for get_app
     command: str,
-    chat_id: str,
+    chat_id: ChatId,
     is_background: bool = False,
-    session: str | None = None,
+    session: Session = None,
 ) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
@@ -257,14 +273,12 @@ async def run_command(
     ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def check_status(
-    chat_id: str,
-    session: str | None = None,
+    chat_id: ChatId,
+    session: Session = None,
     wait_for_seconds: float | None = None,
 ) -> str:
     app = get_app()
@@ -332,13 +346,13 @@ async def check_status(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def send_input(
     text: str,
-    chat_id: str,
-    session: str | None = None,
+    chat_id: ChatId,
+    session: Session = None,
 ) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
@@ -371,13 +385,13 @@ async def send_input(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def send_keys(
-    chat_id: str,
+    chat_id: ChatId,
     keys: list[Specials] | Specials = "Ctrl-c",
-    session: str | None = None,
+    session: Session = None,
 ) -> str:
     # `Specials` is a Literal, so FastMCP puts the whole key vocabulary into this
     # tool's JSON Schema as an enum, and pydantic rejects anything outside it
