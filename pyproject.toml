@@ -11,6 +11,11 @@ dependencies = [
     "pyte>=0.8.2",
     "psutil>=7.0.0",
     "mcp>=1.23.0",
+    # Already arrives under mcp, which is built on it — but the tool signatures
+    # import Field directly to put descriptions and bounds in the input schema,
+    # and a package should declare what it imports rather than lean on someone
+    # else's transitive pin.
+    "pydantic>=2.0",
     # PDF text extraction. 2MB, BSD, and — unusually — zero transitive
     # dependencies. PyMuPDF is faster but AGPL, which would relicense babash.
     "pypdf>=6.0.0",

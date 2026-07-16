@@ -10,11 +10,12 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib import metadata
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from ...settings import Settings
 from ..bash_state import get_tmpdir
@@ -141,6 +142,36 @@ mcp = FastMCP(
     host=SETTINGS.host,
     port=SETTINGS.port,
 )
+
+
+# The two parameters nearly every tool takes. Declared once, so the model gets
+# the same account of what they mean on every tool rather than the bare
+# `{"title": "Chat Id", "type": "string"}` that an unannotated `str` compiles
+# down to — which says nothing about where the value comes from or why it
+# matters. The description is prompt surface: it ships to the model with
+# tools/list, and it is the only chance to explain a parameter *before* the
+# model guesses at it.
+ChatId = Annotated[
+    str,
+    Field(
+        description=(
+            "The chat_id babash_initialize returned for this conversation. It is "
+            "what keeps this chat's shells separate from every other chat's on "
+            "the same server — pass the same one on every call."
+        ),
+    ),
+]
+
+Session = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Which of this chat's shells to act in. Omit for the default 'main' "
+            "shell; pass a name from create_session (or list_sessions) to work in "
+            "a parallel one — including one sitting inside an SSH connection."
+        ),
+    ),
+]
 
 
 def text_tool(

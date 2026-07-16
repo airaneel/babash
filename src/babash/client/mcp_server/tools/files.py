@@ -15,19 +15,33 @@ it can't be done, we say so and the agent reads the file — which is what the
 whitelist was trying to force anyway.
 """
 
+from typing import Annotated
+
+import anyio
 from mcp.server.fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from ...documents import DocumentError, extract
 from ...fs import FileError, FileStore, LocalStore, SessionStore
 from ...images import ImageError, load
 from ..chat import resolve_chat
-from ..instance import get_app, text_tool
+from ..instance import ChatId, Session, get_app, text_tool
 from ..state import ChatWorkspace
 
 # Reading a whole file at once is usually a mistake on anything large; this is
 # where we make the agent say what it actually wants.
 DEFAULT_READ_LIMIT = 2000
+
+FilePath = Annotated[
+    str,
+    Field(
+        description=(
+            "Path to the file. Absolute, or relative to the working directory of "
+            "the shell this call runs against (see session)."
+        ),
+    ),
+]
 
 def _store(chat: ChatWorkspace, session: str | None) -> FileStore | str:
     """Where this call's files live, or an error to hand back."""
@@ -39,20 +53,48 @@ def _store(chat: ChatWorkspace, session: str | None) -> FileStore | str:
         return f"Error: {e}"
 
 
-def _numbered(content: str, offset: int, limit: int) -> str:
-    """A slice of the file with line numbers, cat -n style."""
-    lines = content.splitlines()
-    start = max(1, offset)
-    chunk = lines[start - 1 : start - 1 + limit]
-    body = "\n".join(f"{start + i:6d}\t{line}" for i, line in enumerate(chunk))
+# Every store call below goes through a worker thread. A FileStore is
+# deliberately synchronous — LocalStore opens a file, SessionStore sends
+# `base64 < path` down a pty and waits for the prompt — and calling either
+# straight from an `async def` parks the whole event loop on it. That is not
+# theoretical: a single read_file against a *local* session measured 1304ms with
+# zero heartbeat ticks getting through, and a session sitting in an SSH
+# connection turns each of those round trips into a network one. One chat
+# reading a file would stall every other chat's tool call on the shared server.
+#
+# shell.py already hands execute_bash to anyio.to_thread for exactly this
+# reason; the file tools simply never followed.
 
-    shown_to = start + len(chunk) - 1
+
+def _numbered(content: str, offset: int, limit: int) -> str:
+    """A slice of the file with line numbers, cat -n style.
+
+    `offset` is 1-based and `limit` is positive — the schema guarantees both, so
+    there is no clamping here. It used to clamp `max(1, offset)`, which quietly
+    turned a nonsense offset into a read of the top of the file.
+    """
+    lines = content.splitlines()
+    chunk = lines[offset - 1 : offset - 1 + limit]
+
+    if not chunk:
+        # Distinguish the two ways a read comes back empty. This used to answer
+        # "(empty file)" to both — so a read past the end of a perfectly good
+        # file told the model the file had nothing in it.
+        if not lines:
+            return "(empty file)"
+        return (
+            f"(no lines at offset {offset}: the file has {len(lines)} lines. "
+            f"Pass an offset of {len(lines)} or less.)"
+        )
+
+    body = "\n".join(f"{offset + i:6d}\t{line}" for i, line in enumerate(chunk))
+    shown_to = offset + len(chunk) - 1
     if len(lines) > shown_to:
         body += (
-            f"\n\n(showing lines {start}-{shown_to} of {len(lines)}; "
+            f"\n\n(showing lines {offset}-{shown_to} of {len(lines)}; "
             f"pass offset={shown_to + 1} to continue)"
         )
-    return body or "(empty file)"
+    return body
 
 
 @text_tool(
@@ -63,17 +105,21 @@ def _numbered(content: str, offset: int, limit: int) -> str:
     ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def read_file(
-    file_path: str,
-    chat_id: str,
-    session: str | None = None,
-    offset: int = 1,
-    limit: int = DEFAULT_READ_LIMIT,
+    file_path: FilePath,
+    chat_id: ChatId,
+    session: Session = None,
+    offset: Annotated[
+        int,
+        Field(ge=1, description="First line to return, counting from 1."),
+    ] = 1,
+    limit: Annotated[
+        int,
+        Field(ge=1, description="How many lines to return, starting at offset."),
+    ] = DEFAULT_READ_LIMIT,
 ) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
@@ -83,7 +129,7 @@ async def read_file(
     if isinstance(store, str):
         return store
     try:
-        content = store.read(file_path)
+        content = await anyio.to_thread.run_sync(store.read, file_path)
     except FileError as e:
         return f"Error: {e}"
     return _numbered(content, offset, limit)[:app.settings.max_output_chars]
@@ -99,15 +145,13 @@ async def read_file(
     ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def read_image(
-    file_path: str,
-    chat_id: str,
-    session: str | None = None,
+    file_path: FilePath,
+    chat_id: ChatId,
+    session: Session = None,
 ) -> Image | str:
     # Returns a real Image, which FastMCP turns into ImageContent — so the model
     # actually sees the picture. The version of this tool that used to exist read
@@ -123,7 +167,8 @@ async def read_image(
         return store
 
     try:
-        image = load(store.read_bytes(file_path))
+        data = await anyio.to_thread.run_sync(store.read_bytes, file_path)
+        image = load(data)
     except FileError as e:
         return f"Error: {e}"
     except ImageError as e:
@@ -142,15 +187,13 @@ async def read_image(
     ),
     annotations=ToolAnnotations(
         readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def read_document(
-    file_path: str,
-    chat_id: str,
-    session: str | None = None,
+    file_path: FilePath,
+    chat_id: ChatId,
+    session: Session = None,
 ) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
@@ -161,7 +204,10 @@ async def read_document(
         return store
 
     try:
-        doc = extract(store.read_bytes(file_path))
+        data = await anyio.to_thread.run_sync(store.read_bytes, file_path)
+        # extract() too: parsing a few hundred PDF pages is seconds of CPU, and
+        # the loop should not be sitting inside pypdf either.
+        doc = await anyio.to_thread.run_sync(extract, data)
     except FileError as e:
         return f"Error: {e}"
     except DocumentError as e:
@@ -186,14 +232,14 @@ async def read_document(
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def write_file(
-    file_path: str,
+    file_path: FilePath,
     content: str,
-    chat_id: str,
-    session: str | None = None,
+    chat_id: ChatId,
+    session: Session = None,
 ) -> str:
     app = get_app()
     chat, err = resolve_chat(app, chat_id)
@@ -203,9 +249,13 @@ async def write_file(
     if isinstance(store, str):
         return store
 
-    existed = store.exists(file_path)
     try:
-        store.write(file_path, content)
+        # exists() belongs inside the try: on a SessionStore it is a pty round
+        # trip like any other, and it raises FileError when the session is busy.
+        # Outside, that escaped as an unhandled exception rather than the message
+        # telling the agent to check_status or Ctrl-c first.
+        existed = await anyio.to_thread.run_sync(store.exists, file_path)
+        await anyio.to_thread.run_sync(store.write, file_path, content)
     except FileError as e:
         return f"Error: {e}"
 
@@ -226,15 +276,15 @@ async def write_file(
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 async def edit_file(
-    file_path: str,
+    file_path: FilePath,
     old_string: str,
     new_string: str,
-    chat_id: str,
-    session: str | None = None,
+    chat_id: ChatId,
+    session: Session = None,
     replace_all: bool = False,
 ) -> str:
     app = get_app()
@@ -251,7 +301,7 @@ async def edit_file(
         return "Error: old_string and new_string are identical; nothing to do."
 
     try:
-        content = store.read(file_path)
+        content = await anyio.to_thread.run_sync(store.read, file_path)
     except FileError as e:
         return f"Error: {e}"
 
@@ -270,7 +320,9 @@ async def edit_file(
         )
 
     try:
-        store.write(file_path, content.replace(old_string, new_string))
+        await anyio.to_thread.run_sync(
+            store.write, file_path, content.replace(old_string, new_string)
+        )
     except FileError as e:
         return f"Error: {e}"
 
